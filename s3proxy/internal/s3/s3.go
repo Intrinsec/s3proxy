@@ -15,17 +15,96 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go/middleware"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
 // Client is a wrapper around the AWS S3 client.
 type Client struct {
 	s3client *s3.Client
+	s3config *aws.Config
+}
+
+type RawResponseKey struct{}
+
+type ErrorRawResponse struct {
+	err         error
+	RawResponse string
+}
+
+func (m *ErrorRawResponse) Unwrap() error {
+	return m.err
+}
+
+func (m *ErrorRawResponse) Error() string {
+	return m.RawResponse
+}
+
+// Middleware pour capturer la réponse brute dans la phase Send
+func addCaptureRawResponseDeserializeMiddleware() func(*middleware.Stack) error {
+	return func(stack *middleware.Stack) error {
+		return stack.Deserialize.Add(middleware.DeserializeMiddlewareFunc("CaptureRawResponseDeserialize", func(
+			ctx context.Context, in middleware.DeserializeInput, next middleware.DeserializeHandler,
+		) (
+			out middleware.DeserializeOutput, metadata middleware.Metadata, err error,
+		) {
+			out, metadata, err = next.HandleDeserialize(ctx, in)
+			if resp, ok := out.RawResponse.(*smithyhttp.Response); ok {
+				// Cloner le corps de la réponse
+				var buf bytes.Buffer
+				body := resp.Body
+				tee := io.NopCloser(io.TeeReader(body, &buf))
+
+				// Remplacer le corps dans la réponse par le nouveau corps cloné
+				resp.Body = tee
+
+				bodyBytes, _ := io.ReadAll(resp.Body)
+
+				metadata.Set(RawResponseKey{}, string(bodyBytes))
+
+				// Restaurer le corps original pour un traitement ultérieur
+				resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			}
+			return out, metadata, err
+		}), middleware.After)
+	}
+}
+
+func addCaptureRawResponseInitializeMiddleware() func(*middleware.Stack) error {
+	return func(stack *middleware.Stack) error {
+		return stack.Initialize.Add(middleware.InitializeMiddlewareFunc("CaptureRawResponseInitialize", func(
+			ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler,
+		) (
+			out middleware.InitializeOutput, metadata middleware.Metadata, err error,
+		) {
+			out, metadata, err = next.HandleInitialize(ctx, in)
+
+			if err != nil {
+				return out, metadata, &ErrorRawResponse{
+					err: err,
+					RawResponse: func() string {
+						if val, ok := metadata.Get(RawResponseKey{}).(string); ok {
+							return val
+						}
+						return ""
+					}(),
+				}
+			}
+
+			return out, metadata, err
+
+		}), middleware.After)
+	}
 }
 
 // NewClient creates a new AWS S3 client.
@@ -41,9 +120,23 @@ func NewClient(region string) (*Client, error) {
 		return nil, fmt.Errorf("loading AWS S3 client config: %w", err)
 	}
 
-	client := s3.NewFromConfig(clientCfg)
+	host, err := GetHostConfig()
+	if err != nil {
+		return nil, fmt.Errorf("loading AWS S3 client config: %w", err)
+	}
 
-	return &Client{client}, nil
+	client := s3.NewFromConfig(clientCfg, func(o *s3.Options) {
+		o.UsePathStyle = true // Assurez-vous d'utiliser le style "path-style" avec MinIO
+		o.BaseEndpoint = aws.String("https://" + host)
+		o.APIOptions = append(o.APIOptions, addCaptureRawResponseDeserializeMiddleware())
+		o.APIOptions = append(o.APIOptions, addCaptureRawResponseInitializeMiddleware())
+	})
+
+	return &Client{s3client: client, s3config: &clientCfg}, nil
+}
+
+func (c Client) GetConfig() *aws.Config {
+	return c.s3config
 }
 
 // GetObject returns the object with the given key from the given bucket.
@@ -113,4 +206,12 @@ func (c Client) PutObject(ctx context.Context, bucket, key, tags, contentType, o
 	}
 
 	return c.s3client.PutObject(ctx, putObjectInput)
+}
+
+func GetHostConfig() (string, error) {
+	result, exist := os.LookupEnv("S3PROXY_S3_HOST")
+	if !exist {
+		return "", errors.New("unable to get 'S3PROXY_S3_HOST' env var")
+	}
+	return result, nil
 }

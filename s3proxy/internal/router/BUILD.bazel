@@ -8,7 +8,7 @@ go_library(
         "object.go",
         "router.go",
     ],
-    importpath = "github.com/edgelesssys/constellation/v2/s3proxy/internal/router",
+    importpath = "github.com/intrinsec/s3proxy/internal/router",
     visibility = ["//s3proxy:__subpackages__"],
     deps = [
         "//s3proxy/internal/crypto",

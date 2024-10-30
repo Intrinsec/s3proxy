@@ -4,7 +4,7 @@ load("//bazel/go:go_test.bzl", "go_test")
 go_library(
     name = "crypto",
     srcs = ["crypto.go"],
-    importpath = "github.com/edgelesssys/constellation/v2/s3proxy/internal/crypto",
+    importpath = "github.com/intrinsec/s3proxy/internal/crypto",
     visibility = ["//s3proxy:__subpackages__"],
     deps = [
         "@com_github_tink_crypto_tink_go_v2//aead/subtle",

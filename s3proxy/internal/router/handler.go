@@ -7,18 +7,21 @@ SPDX-License-Identifier: AGPL-3.0-only
 package router
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
+	"time"
 
-	"github.com/edgelesssys/constellation/v2/s3proxy/internal/s3"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/intrinsec/s3proxy/internal/s3"
+	logger "github.com/sirupsen/logrus"
 )
 
-func handleGetObject(client *s3.Client, key string, bucket string, log *slog.Logger) http.HandlerFunc {
+func handleGetObject(client *s3.Client, key string, bucket string, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.With(slog.String("path", req.URL.Path), slog.String("method", req.Method), slog.String("host", req.Host)).Debug("intercepting")
+		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
 		if req.Header.Get("Range") != "" {
 			log.Error("GetObject Range header unsupported")
 			http.Error(w, "s3proxy currently does not support Range headers", http.StatusNotImplemented)
@@ -39,12 +42,12 @@ func handleGetObject(client *s3.Client, key string, bucket string, log *slog.Log
 	}
 }
 
-func handlePutObject(client *s3.Client, key string, bucket string, log *slog.Logger) http.HandlerFunc {
+func handlePutObject(client *s3.Client, key string, bucket string, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.With(slog.String("path", req.URL.Path), slog.String("method", req.Method), slog.String("host", req.Host)).Debug("intercepting")
+		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
-			log.With(slog.Any("error", err)).Error("PutObject")
+			log.WithField("error", err).Error("PutObject")
 			http.Error(w, fmt.Sprintf("reading body: %s", err.Error()), http.StatusInternalServerError)
 			return
 		}
@@ -64,7 +67,7 @@ func handlePutObject(client *s3.Client, key string, bucket string, log *slog.Log
 			mismatchErr := NewContentSHA256MismatchError(clientDigest, serverDigest)
 			marshalled, err := xml.Marshal(mismatchErr)
 			if err != nil {
-				log.With(slog.Any("error", err)).Error("PutObject")
+				log.WithField("error", err).Error("PutObject")
 				http.Error(w, fmt.Sprintf("marshalling error: %s", err.Error()), http.StatusInternalServerError)
 				return
 			}
@@ -78,14 +81,14 @@ func handlePutObject(client *s3.Client, key string, bucket string, log *slog.Log
 		raw := req.Header.Get("x-amz-object-lock-retain-until-date")
 		retentionTime, err := parseRetentionTime(raw)
 		if err != nil {
-			log.With(slog.String("data", raw), slog.Any("error", err)).Error("parsing lock retention time")
+			log.WithField("data", raw).WithField("error", err).Error("parsing lock retention time")
 			http.Error(w, fmt.Sprintf("parsing x-amz-object-lock-retain-until-date: %s", err.Error()), http.StatusInternalServerError)
 			return
 		}
 
 		err = validateContentMD5(req.Header.Get("content-md5"), body)
 		if err != nil {
-			log.With(slog.Any("error", err)).Error("validating content md5")
+			log.WithField("error", err).Error("validating content md5")
 			http.Error(w, fmt.Sprintf("validating content md5: %s", err.Error()), http.StatusBadRequest)
 			return
 		}
@@ -112,16 +115,32 @@ func handlePutObject(client *s3.Client, key string, bucket string, log *slog.Log
 	}
 }
 
-func handleForwards(log *slog.Logger) http.HandlerFunc {
+func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.With(slog.String("path", req.URL.Path), slog.String("method", req.Method), slog.String("host", req.Host)).Debug("forwarding")
+		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("forwarding")
 
 		newReq := repackage(req)
+
+		cfg := client.GetConfig()
+
+		creds, err := cfg.Credentials.Retrieve(context.TODO())
+		if err != nil {
+			log.WithField("error", err).Error("unable to retrieve aws creds")
+			return
+		}
+
+		signer := v4.NewSigner()
+
+		err = signer.SignHTTP(context.TODO(), creds, &newReq, newReq.Header.Get("X-Amz-Content-Sha256"), "s3", cfg.Region, time.Now())
+		if err != nil {
+			log.WithField("error", err).Error("failed to sign request")
+			return
+		}
 
 		httpClient := http.DefaultClient
 		resp, err := httpClient.Do(&newReq)
 		if err != nil {
-			log.With(slog.Any("error", err)).Error("do request")
+			log.WithField("error", err).Error("do request")
 			http.Error(w, fmt.Sprintf("do request: %s", err.Error()), http.StatusInternalServerError)
 			return
 		}
@@ -132,7 +151,7 @@ func handleForwards(log *slog.Logger) http.HandlerFunc {
 		}
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			log.With(slog.Any("error", err)).Error("ReadAll")
+			log.WithField("error", err).Error("ReadAll")
 			http.Error(w, fmt.Sprintf("reading body: %s", err.Error()), http.StatusInternalServerError)
 			return
 		}
@@ -142,7 +161,7 @@ func handleForwards(log *slog.Logger) http.HandlerFunc {
 		}
 
 		if _, err := w.Write(body); err != nil {
-			log.With(slog.Any("error", err)).Error("Write")
+			log.WithField("error", err).Error("Write")
 			http.Error(w, fmt.Sprintf("writing body: %s", err.Error()), http.StatusInternalServerError)
 			return
 		}
@@ -150,9 +169,9 @@ func handleForwards(log *slog.Logger) http.HandlerFunc {
 }
 
 // handleCreateMultipartUpload logs the request and blocks with an error message.
-func handleCreateMultipartUpload(log *slog.Logger) http.HandlerFunc {
+func handleCreateMultipartUpload(log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.With(slog.String("path", req.URL.Path), slog.String("method", req.Method), slog.String("host", req.Host)).Debug("intercepting CreateMultipartUpload")
+		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting CreateMultipartUpload")
 
 		log.Error("Blocking CreateMultipartUpload request")
 		http.Error(w, "s3proxy is configured to block CreateMultipartUpload requests", http.StatusNotImplemented)
@@ -160,9 +179,9 @@ func handleCreateMultipartUpload(log *slog.Logger) http.HandlerFunc {
 }
 
 // handleUploadPart logs the request and blocks with an error message.
-func handleUploadPart(log *slog.Logger) http.HandlerFunc {
+func handleUploadPart(log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.With(slog.String("path", req.URL.Path), slog.String("method", req.Method), slog.String("host", req.Host)).Debug("intercepting UploadPart")
+		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting UploadPart")
 
 		log.Error("Blocking UploadPart request")
 		http.Error(w, "s3proxy is configured to block UploadPart requests", http.StatusNotImplemented)
@@ -170,9 +189,9 @@ func handleUploadPart(log *slog.Logger) http.HandlerFunc {
 }
 
 // handleCompleteMultipartUpload logs the request and blocks with an error message.
-func handleCompleteMultipartUpload(log *slog.Logger) http.HandlerFunc {
+func handleCompleteMultipartUpload(log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.With(slog.String("path", req.URL.Path), slog.String("method", req.Method), slog.String("host", req.Host)).Debug("intercepting CompleteMultipartUpload")
+		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting CompleteMultipartUpload")
 
 		log.Error("Blocking CompleteMultipartUpload request")
 		http.Error(w, "s3proxy is configured to block CompleteMultipartUpload requests", http.StatusNotImplemented)
@@ -180,9 +199,9 @@ func handleCompleteMultipartUpload(log *slog.Logger) http.HandlerFunc {
 }
 
 // handleAbortMultipartUpload logs the request and blocks with an error message.
-func handleAbortMultipartUpload(log *slog.Logger) http.HandlerFunc {
+func handleAbortMultipartUpload(log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.With(slog.String("path", req.URL.Path), slog.String("method", req.Method), slog.String("host", req.Host)).Debug("intercepting AbortMultipartUpload")
+		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting AbortMultipartUpload")
 
 		log.Error("Blocking AbortMultipartUpload request")
 		http.Error(w, "s3proxy is configured to block AbortMultipartUpload requests", http.StatusNotImplemented)

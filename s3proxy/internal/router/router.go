@@ -21,27 +21,21 @@ package router
 
 import (
 	"bytes"
-	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/edgelesssys/constellation/v2/s3proxy/internal/kms"
-	"github.com/edgelesssys/constellation/v2/s3proxy/internal/s3"
-)
-
-const (
-	// Use a 32*8 = 256 bit key for AES-256.
-	kekSizeBytes = 32
-	kekID        = "s3proxy-kek"
+	"github.com/intrinsec/s3proxy/internal/s3"
+	logger "github.com/sirupsen/logrus"
 )
 
 var (
@@ -57,24 +51,22 @@ type Router struct {
 	// s3proxy does not implement those yet.
 	// Setting forwardMultipartReqs to true will forward those requests to the S3 API, otherwise we block them (secure defaults).
 	forwardMultipartReqs bool
-	log                  *slog.Logger
+	log                  *logger.Logger
+}
+
+// Fonction pour générer un tableau de 32 octets à partir d'une chaîne
+func generateKEKFromString(input string) [32]byte {
+	hash := sha256.Sum256([]byte(input))
+	return hash
 }
 
 // New creates a new Router.
-func New(region, endpoint string, forwardMultipartReqs bool, log *slog.Logger) (Router, error) {
-	kms := kms.New(log, endpoint)
-
-	// Get the key encryption key that encrypts all DEKs.
-	kek, err := kms.GetDataKey(context.Background(), kekID, kekSizeBytes)
-	if err != nil {
-		return Router{}, fmt.Errorf("getting KEK: %w", err)
+func New(region, endpoint string, forwardMultipartReqs bool, log *logger.Logger) (Router, error) {
+	result, exist := os.LookupEnv("S3PROXY_ENCRYPT_KEY")
+	if !exist {
+		return Router{}, errors.New("unable to get 'S3PROXY_ENCRYPT_KEY' env var")
 	}
-
-	kekArray, err := byteSliceToByteArray(kek)
-	if err != nil {
-		return Router{}, fmt.Errorf("converting KEK to byte array: %w", err)
-	}
-
+	kekArray := generateKEKFromString(result)
 	return Router{region: region, kek: kekArray, forwardMultipartReqs: forwardMultipartReqs, log: log}, nil
 }
 
@@ -93,16 +85,16 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 	var key string
 	var bucket string
 	var matchingPath bool
-	if containsBucket(req.Host) {
-		// BUCKET.s3.REGION.amazonaws.com
-		parts := strings.Split(req.Host, ".")
-		bucket = parts[0]
+	// if containsBucket(req.Host) {
+	// 	// BUCKET.s3.REGION.amazonaws.com
+	// 	parts := strings.Split(req.Host, ".")
+	// 	bucket = parts[0]
 
-		matchingPath = match(req.URL.Path, keyPattern, &key)
+	// 	matchingPath = match(req.URL.Path, keyPattern, &key)
 
-	} else {
-		matchingPath = match(req.URL.Path, bucketAndKeyPattern, &bucket, &key)
-	}
+	// } else {
+	matchingPath = match(req.URL.Path, bucketAndKeyPattern, &bucket, &key)
+	// }
 
 	var h http.Handler
 
@@ -123,7 +115,7 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 		h = handleAbortMultipartUpload(r.log)
 	// Forward all other requests.
 	default:
-		h = handleForwards(r.log)
+		h = handleForwards(client, r.log)
 	}
 
 	h.ServeHTTP(w, req)
@@ -186,10 +178,10 @@ func byteSliceToByteArray(input []byte) ([32]byte, error) {
 
 // containsBucket is a helper to recognizes cases where the bucket name is sent as part of the host.
 // In other cases the bucket name is sent as part of the path.
-func containsBucket(host string) bool {
-	parts := strings.Split(host, ".")
-	return len(parts) > 4
-}
+// func containsBucket(host string) bool {
+// 	parts := strings.Split(host, ".")
+// 	return len(parts) > 4
+// }
 
 // isUnwantedGetEndpoint returns true if the request is any of these requests: GetObjectAcl, GetObjectAttributes, GetObjectLegalHold, GetObjectRetention, GetObjectTagging, GetObjectTorrent, ListParts.
 // These requests are all structured similarly: they all have a query param that is not present in GetObject.
@@ -264,9 +256,26 @@ func repackage(r *http.Request) http.Request {
 	// So, we unset it.
 	req.RequestURI = ""
 
-	req.URL.Host = r.Host
+	host, _ := s3.GetHostConfig()
+
+	req.Host = host
+	req.URL.Host = host
 	// We always want to use HTTPS when talking to S3.
 	req.URL.Scheme = "https"
+
+	headersToRemove := []string{
+		"X-Real-Ip",
+		"X-Forwarded-Scheme",
+		"X-Forwarded-Proto",
+		"X-Scheme",
+		"X-Forwarded-Host",
+		"X-Forwarded-Port",
+		"X-Forwarded-For",
+	}
+
+	for _, header := range headersToRemove {
+		req.Header.Del(header)
+	}
 
 	return *req
 }

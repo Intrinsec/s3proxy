@@ -5,7 +5,7 @@ load("@rules_pkg//:pkg.bzl", "pkg_tar")
 go_library(
     name = "cmd_lib",
     srcs = ["main.go"],
-    importpath = "github.com/edgelesssys/constellation/v2/s3proxy/cmd",
+    importpath = "github.com/intrinsec/s3proxy/cmd",
     visibility = ["//visibility:private"],
     deps = [
         "//internal/logger",

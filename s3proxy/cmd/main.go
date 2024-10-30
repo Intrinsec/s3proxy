@@ -13,12 +13,11 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 
-	"github.com/edgelesssys/constellation/v2/internal/logger"
-	"github.com/edgelesssys/constellation/v2/s3proxy/internal/router"
+	"github.com/intrinsec/s3proxy/internal/router"
+	logger "github.com/sirupsen/logrus"
 )
 
 const (
@@ -47,19 +46,32 @@ func main() {
 	// logger := slog.New(handler)
 	// logLevel.Set(flags.logLevel)
 
-	logger := logger.NewJSONLogger(logger.VerbosityFromInt(flags.logLevel))
-
-	if flags.forwardMultipartReqs {
-		logger.Warn("configured to forward multipart uploads, this may leak data to AWS")
+	log := logger.New()
+	// log.SetFormatter(&logger.JSONFormatter{})
+	switch {
+	case flags.logLevel <= -1:
+		log.SetLevel(logger.DebugLevel)
+	case flags.logLevel == 0:
+		log.SetLevel(logger.InfoLevel)
+	case flags.logLevel == 1:
+		log.SetLevel(logger.WarnLevel)
+	case flags.logLevel >= 2:
+		log.SetLevel(logger.ErrorLevel)
+	default:
+		log.SetLevel(logger.InfoLevel)
 	}
 
-	if err := runServer(flags, logger); err != nil {
+	if flags.forwardMultipartReqs {
+		log.Warn("configured to forward multipart uploads, this may leak data to AWS")
+	}
+
+	if err := runServer(flags, log); err != nil {
 		panic(err)
 	}
 }
 
-func runServer(flags cmdFlags, log *slog.Logger) error {
-	log.With(slog.String("ip", flags.ip), slog.Int("port", defaultPort), slog.String("region", flags.region)).Info("listening")
+func runServer(flags cmdFlags, log *logger.Logger) error {
+	log.WithField("ip", flags.ip).WithField("port", defaultPort).WithField("region", flags.region).Info("listening")
 
 	router, err := router.New(flags.region, flags.kmsEndpoint, flags.forwardMultipartReqs, log)
 	if err != nil {

@@ -9,23 +9,28 @@ package router
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/edgelesssys/constellation/v2/s3proxy/internal/crypto"
+	"github.com/google/uuid"
+	"github.com/intrinsec/s3proxy/internal/crypto"
+	s3internal "github.com/intrinsec/s3proxy/internal/s3"
+	logger "github.com/sirupsen/logrus"
 )
 
-const (
+var (
 	// dekTag is the name of the header that holds the encrypted data encryption key for the attached object. Presence of the key implies the object needs to be decrypted.
 	// Use lowercase only, as AWS automatically lowercases all metadata keys.
-	dekTag = "constellation-dek"
+	dekTag = getDekTagName()
 )
 
 // object bundles data to implement http.Handler methods that use data from incoming requests.
@@ -45,12 +50,14 @@ type object struct {
 	sseCustomerAlgorithm      string
 	sseCustomerKey            string
 	sseCustomerKeyMD5         string
-	log                       *slog.Logger
+	log                       *logger.Logger
 }
 
 // get is a http.HandlerFunc that implements the GET method for objects.
 func (o object) get(w http.ResponseWriter, r *http.Request) {
-	o.log.With(slog.String("key", o.key), slog.String("host", o.bucket)).Debug("getObject")
+	requestID := uuid.New().String()
+
+	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Debug("getObject")
 
 	versionID, ok := o.query["versionId"]
 	if !ok {
@@ -60,16 +67,27 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	output, err := o.client.GetObject(r.Context(), o.bucket, o.key, versionID[0], o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
 	if err != nil {
 		// log with Info as it might be expected behavior (e.g. object not found).
-		o.log.With(slog.Any("error", err)).Error("GetObject sending request to S3")
+		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending request to S3")
 
-		// We want to forward error codes from the s3 API to clients as much as possible.
-		code := parseErrorCode(err)
-		if code != 0 {
-			http.Error(w, err.Error(), code)
-			return
+		var httpResponseErr *awshttp.ResponseError
+		if errors.As(err, &httpResponseErr) {
+			// We want to forward error codes from the s3 API to clients as much as possible.
+			code := httpResponseErr.HTTPStatusCode()
+			if code != 0 {
+				var s3internalErr *s3internal.ErrorRawResponse
+				if errors.As(err, &s3internalErr) {
+					http.Error(w, s3internalErr.Error(), code)
+				} else {
+					http.Error(w, err.Error(), code)
+				}
+				for key := range httpResponseErr.ResponseError.Response.Response.Header {
+					w.Header().Set(key, httpResponseErr.ResponseError.Response.Response.Header.Get(key))
+				}
+				return
+			}
+
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
-
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -106,7 +124,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(output.Body)
 	if err != nil {
-		o.log.With(slog.Any("error", err)).Error("GetObject reading S3 response")
+		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject reading S3 response")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -123,7 +141,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 
 		plaintext, err = crypto.Decrypt(body, encryptedDEK, o.kek)
 		if err != nil {
-			o.log.With(slog.Any("error", err)).Error("GetObject decrypting response")
+			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decrypting response")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -131,15 +149,19 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(plaintext); err != nil {
-		o.log.With(slog.Any("error", err)).Error("GetObject sending response")
+		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending response")
 	}
 }
 
 // put is a http.HandlerFunc that implements the PUT method for objects.
 func (o object) put(w http.ResponseWriter, r *http.Request) {
+	requestID := uuid.New().String()
+
+	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Debug("putObject")
+
 	ciphertext, encryptedDEK, err := crypto.Encrypt(o.data, o.kek)
 	if err != nil {
-		o.log.With(slog.Any("error", err)).Error("PutObject")
+		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -147,7 +169,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 
 	output, err := o.client.PutObject(r.Context(), o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
 	if err != nil {
-		o.log.With(slog.Any("error", err)).Error("PutObject sending request to S3")
+		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject sending request to S3")
 
 		// We want to forward error codes from the s3 API to clients whenever possible.
 		code := parseErrorCode(err)
@@ -198,7 +220,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(nil); err != nil {
-		o.log.With(slog.Any("error", err)).Error("PutObject sending response")
+		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject sending response")
 	}
 }
 
@@ -211,6 +233,13 @@ func parseErrorCode(err error) int {
 	}
 
 	return 0
+}
+
+func getDekTagName() string {
+	if value, ok := os.LookupEnv("S3PROXY_DEKTAG_NAME"); ok {
+		return value
+	}
+	return "isec"
 }
 
 type s3Client interface {

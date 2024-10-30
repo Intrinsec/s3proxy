@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "s3proxy.fullname" . }}
+  labels:
+    {{- include "s3proxy.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "s3proxy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "s3proxy.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: {{ .Values.args }}
+          env:
+          - name: AWS_ACCESS_KEY_ID
+            valueFrom:
+              secretKeyRef:
+                name: s3proxy
+                key: accesskey
+          - name: AWS_SECRET_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: s3proxy
+                key: secretkey
+          - name: S3PROXY_ENCRYPT_KEY
+            valueFrom:
+              secretKeyRef:
+                name: s3proxy
+                key: encryptkey
+          - name: S3PROXY_S3_HOST
+            value: {{ .Values.config.host | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if or .Values.enableCertFromCertManager (.Values.extraVolumeMounts | not | empty) }}
+          volumeMounts:
+          {{- if .Values.enableCertFromCertManager }}
+          - name: cert-s3proxy-tls
+            mountPath: /etc/s3proxy/certs/s3proxy.crt
+            subPath: tls.crt
+          - name: cert-s3proxy-tls
+            mountPath: /etc/s3proxy/certs/s3proxy.key
+            subPath: tls.key
+          {{- end }}
+          {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 10 }}
+          {{- end }}
+          {{- else }}
+          volumeMounts: []
+          {{- end }}
+      {{- if or .Values.enableCertFromCertManager (.Values.extraVolumes | not | empty) }}
+      volumes:
+      {{- if .Values.enableCertFromCertManager }}
+      - name: cert-s3proxy-tls
+        secret:
+          secretName: cert-s3proxy-tls
+      {{- end }}
+      {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- else }}
+      volumes: []
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
