@@ -9,7 +9,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # TARGET_PLATFORMS: 'linux/amd64,linux/arm64'
+  TARGET_PLATFORMS: 'linux/amd64,linux/arm64'
 
 jobs:
   build:
@@ -31,7 +31,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          # platforms: ${{ env.TARGET_PLATFORMS }}
+          platforms: ${{ env.TARGET_PLATFORMS }}
           use: true
 
       # Login against a Docker registry except on PR
@@ -64,7 +64,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          # platforms: ${{ env.TARGET_PLATFORMS }}
+          platforms: ${{ env.TARGET_PLATFORMS }}
           push: true
           # push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
