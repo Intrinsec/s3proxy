@@ -11,7 +11,6 @@ RUN cd s3proxy/cmd && CGO_ENABLED=0 GOOS=linux go build main.go
 
 # Deploy the application binary into a lean image
 FROM busybox:1.36 AS build-release-stage
-LABEL org.opencontainers.image.source=https://github.com/intrinsec/s3proxy
 
 WORKDIR /app
 # ENV AWS_ACCESS_KEY_ID="TEST"
