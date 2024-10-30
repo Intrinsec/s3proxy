@@ -1,0 +1,39 @@
+name: Helm
+
+on:
+  push:
+    tags: [ 'v*.*.*' ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  CHART_REPO: intrinsec/s3proxy/charts
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+      attestations: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Get current tag without 'v'
+        run: echo "CURRENT_TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+
+      - name: Chart | Push
+        uses: appany/helm-oci-chart-releaser@v0.3.0
+        with:
+          name: s3proxy
+          repository: ${{ env.CHART_REPO }}
+          tag: ${{ env.CURRENT_TAG }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
