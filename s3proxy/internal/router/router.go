@@ -1,5 +1,6 @@
 /*
 Copyright (c) Edgeless Systems GmbH
+Copyright (c) Intrinsec 2024
 
 SPDX-License-Identifier: AGPL-3.0-only
 */
@@ -54,7 +55,7 @@ type Router struct {
 	log                  *logger.Logger
 }
 
-// Fonction pour générer un tableau de 32 octets à partir d'une chaîne
+// Function to generate a 32-byte array (KEK) from a string input using SHA-256
 func generateKEKFromString(input string) [32]byte {
 	hash := sha256.Sum256([]byte(input))
 	return hash

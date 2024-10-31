@@ -1,5 +1,6 @@
 /*
 Copyright (c) Edgeless Systems GmbH
+Copyright (c) Intrinsec 2024
 
 SPDX-License-Identifier: AGPL-3.0-only
 */
@@ -50,7 +51,7 @@ func (m *ErrorRawResponse) Error() string {
 	return m.RawResponse
 }
 
-// Middleware pour capturer la réponse brute dans la phase Send
+// Middleware to capture the raw response in the Send phase by cloning and storing the response body
 func addCaptureRawResponseDeserializeMiddleware() func(*middleware.Stack) error {
 	return func(stack *middleware.Stack) error {
 		return stack.Deserialize.Add(middleware.DeserializeMiddlewareFunc("CaptureRawResponseDeserialize", func(
@@ -60,19 +61,20 @@ func addCaptureRawResponseDeserializeMiddleware() func(*middleware.Stack) error 
 		) {
 			out, metadata, err = next.HandleDeserialize(ctx, in)
 			if resp, ok := out.RawResponse.(*smithyhttp.Response); ok {
-				// Cloner le corps de la réponse
+				// Clone the response body
 				var buf bytes.Buffer
 				body := resp.Body
 				tee := io.NopCloser(io.TeeReader(body, &buf))
 
-				// Remplacer le corps dans la réponse par le nouveau corps cloné
+				// Replace the body in the response with the cloned body
 				resp.Body = tee
 
 				bodyBytes, _ := io.ReadAll(resp.Body)
 
+				// Store the cloned body in metadata
 				metadata.Set(RawResponseKey{}, string(bodyBytes))
 
-				// Restaurer le corps original pour un traitement ultérieur
+				// Restore the original body for further processing
 				resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			}
 			return out, metadata, err
@@ -126,7 +128,7 @@ func NewClient(region string) (*Client, error) {
 	}
 
 	client := s3.NewFromConfig(clientCfg, func(o *s3.Options) {
-		o.UsePathStyle = true // Assurez-vous d'utiliser le style "path-style" avec MinIO
+		o.UsePathStyle = true // Ensure "path-style" is used with MinIO
 		o.BaseEndpoint = aws.String("https://" + host)
 		o.APIOptions = append(o.APIOptions, addCaptureRawResponseDeserializeMiddleware())
 		o.APIOptions = append(o.APIOptions, addCaptureRawResponseInitializeMiddleware())

@@ -1,5 +1,6 @@
 /*
 Copyright (c) Edgeless Systems GmbH
+Copyright (c) Intrinsec 2024
 
 SPDX-License-Identifier: AGPL-3.0-only
 */
