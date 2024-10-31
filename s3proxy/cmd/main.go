@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/router"
 	logger "github.com/sirupsen/logrus"
 )
@@ -60,6 +61,10 @@ func main() {
 		log.SetLevel(logger.ErrorLevel)
 	default:
 		log.SetLevel(logger.InfoLevel)
+	}
+
+	if err := config.LoadConfig(); err != nil {
+		panic(err)
 	}
 
 	if flags.forwardMultipartReqs {

@@ -16,10 +16,8 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -28,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
+	configs3proxy "github.com/intrinsec/s3proxy/internal/config"
 )
 
 // Client is a wrapper around the AWS S3 client.
@@ -122,7 +121,7 @@ func NewClient(region string) (*Client, error) {
 		return nil, fmt.Errorf("loading AWS S3 client config: %w", err)
 	}
 
-	host, err := GetHostConfig()
+	host, err := configs3proxy.GetHostConfig()
 	if err != nil {
 		return nil, fmt.Errorf("loading AWS S3 client config: %w", err)
 	}
@@ -208,12 +207,4 @@ func (c Client) PutObject(ctx context.Context, bucket, key, tags, contentType, o
 	}
 
 	return c.s3client.PutObject(ctx, putObjectInput)
-}
-
-func GetHostConfig() (string, error) {
-	result, exist := os.LookupEnv("S3PROXY_S3_HOST")
-	if !exist {
-		return "", errors.New("unable to get 'S3PROXY_S3_HOST' env var")
-	}
-	return result, nil
 }

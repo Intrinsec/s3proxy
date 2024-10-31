@@ -26,15 +26,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/s3"
 	logger "github.com/sirupsen/logrus"
 )
@@ -63,9 +62,9 @@ func generateKEKFromString(input string) [32]byte {
 
 // New creates a new Router.
 func New(region, endpoint string, forwardMultipartReqs bool, log *logger.Logger) (Router, error) {
-	result, exist := os.LookupEnv("S3PROXY_ENCRYPT_KEY")
-	if !exist {
-		return Router{}, errors.New("unable to get 'S3PROXY_ENCRYPT_KEY' env var")
+	result, err := config.GetEncryptKey()
+	if err != nil {
+		return Router{}, err
 	}
 	kekArray := generateKEKFromString(result)
 	return Router{region: region, kek: kekArray, forwardMultipartReqs: forwardMultipartReqs, log: log}, nil
@@ -257,7 +256,7 @@ func repackage(r *http.Request) http.Request {
 	// So, we unset it.
 	req.RequestURI = ""
 
-	host, _ := s3.GetHostConfig()
+	host, _ := config.GetHostConfig()
 
 	req.Host = host
 	req.URL.Host = host

@@ -14,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,6 +22,7 @@ import (
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
+	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/crypto"
 	s3internal "github.com/intrinsec/s3proxy/internal/s3"
 	logger "github.com/sirupsen/logrus"
@@ -31,7 +31,7 @@ import (
 var (
 	// dekTag is the name of the header that holds the encrypted data encryption key for the attached object. Presence of the key implies the object needs to be decrypted.
 	// Use lowercase only, as AWS automatically lowercases all metadata keys.
-	dekTag = getDekTagName()
+	dekTag = config.GetDekTagName()
 )
 
 // object bundles data to implement http.Handler methods that use data from incoming requests.
@@ -234,13 +234,6 @@ func parseErrorCode(err error) int {
 	}
 
 	return 0
-}
-
-func getDekTagName() string {
-	if value, ok := os.LookupEnv("S3PROXY_DEKTAG_NAME"); ok {
-		return value
-	}
-	return "isec"
 }
 
 type s3Client interface {
