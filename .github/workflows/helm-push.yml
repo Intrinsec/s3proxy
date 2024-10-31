@@ -35,5 +35,5 @@ jobs:
           repository: ${{ env.CHART_REPO }}
           tag: ${{ env.CURRENT_TAG }}
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry_username: ${{ github.actor }}
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
