@@ -18,3 +18,7 @@ docker run ghcr.io/intrinsec/s3proxy --rm -p 80:4433 -e AWS_ACCESS_KEY_ID="XXX" 
 ```bash
 helm ugprade --install s3proxy oci://ghcr.io/intrinsec/s3proxy/charts/s3proxy --version 1.0.0
 ```
+
+## Contribution
+
+[CONTRIBUTING](CONTRIBUTING.md)
