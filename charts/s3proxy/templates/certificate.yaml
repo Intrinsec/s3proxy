@@ -6,7 +6,7 @@ metadata:
 spec:
   commonName: {{ .Values.cert.commonName | quote }}
   dnsNames:
-  - s3proxy.s3proxy.svc.cluster.local
+  - {{ include "s3proxy.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
   issuerRef:
     group: cert-manager.io
     kind: ClusterIssuer
