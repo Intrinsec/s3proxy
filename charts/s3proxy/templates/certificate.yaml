@@ -1,16 +1,16 @@
-{{- if .Values.enableCertFromCertManager }}
+{{- if and (.Values.cert.commonName | not | empty) (.Values.cert.issuerRefName | not | empty) }}
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: cert-s3proxy-tls
 spec:
-  commonName: '*.s3proxy.internal.company.com'
+  commonName: {{ .Values.cert.commonName | quote }}
   dnsNames:
   - s3proxy.s3proxy.svc.cluster.local
   issuerRef:
     group: cert-manager.io
     kind: ClusterIssuer
-    name: internal-company-com
+    name: {{ .Values.cert.issuerRefName | quote }}
   secretName: cert-s3proxy-tls
   usages:
   - digital signature

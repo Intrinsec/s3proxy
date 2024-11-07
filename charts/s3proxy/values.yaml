@@ -12,13 +12,17 @@ fullnameOverride: ""
 # Can add "--no-tls" if you don't want TLS
 # By default, listenning TLS with files /etc/s3proxy/certs/s3proxy.crt & /etc/s3proxy/certs/s3proxy.key
 args: ["--level=-4"]
-enableCertFromCertManager: true
+
+cert: {} # From CertManager CRD
+  # commonName: "*.s3proxy.internal.company.com"
+  # issuerRefName: internal-company-com
+
 config:
   host: s3.us-east-1.amazonaws.com
   # accessKey: CHANGEME
   # secretKey: CHANGEME
   # encryptKey: CHANGEME
-# valsSecret:
+valsSecret: {}
 #   accessKey: ref+vault://s3proxy/secrets/access-key
 #   secretKey: ref+vault://s3proxy/secrets/secret-key
 #   encryptKey: ref+vault://s3proxy/secrets/encrypt-key
