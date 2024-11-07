@@ -29,7 +29,7 @@ jobs:
       - name: Set TARGET_PLATFORMS based on branch (arm only on main)
         id: set-platforms
         run: |
-          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+          if [ "${{ github.ref == format('refs/heads/{0}', 'main') }}" != "true" ]; then
             echo "TARGET_PLATFORMS=linux/amd64" >> $GITHUB_ENV
           fi
 
