@@ -64,9 +64,9 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- if or .Values.enableCertFromCertManager (.Values.extraVolumeMounts | not | empty) }}
+          {{- if or (include "isCertConfigValid" .) (.Values.extraVolumeMounts | not | empty) }}
           volumeMounts:
-          {{- if .Values.enableCertFromCertManager }}
+          {{- if (include "isCertConfigValid" .) }}
           - name: cert-s3proxy-tls
             mountPath: /etc/s3proxy/certs/s3proxy.crt
             subPath: tls.crt
@@ -80,9 +80,9 @@ spec:
           {{- else }}
           volumeMounts: []
           {{- end }}
-      {{- if or .Values.enableCertFromCertManager (.Values.extraVolumes | not | empty) }}
+      {{- if or (include "isCertConfigValid" .) (.Values.extraVolumes | not | empty) }}
       volumes:
-      {{- if .Values.enableCertFromCertManager }}
+      {{- if (include "isCertConfigValid" .) }}
       - name: cert-s3proxy-tls
         secret:
           secretName: cert-s3proxy-tls

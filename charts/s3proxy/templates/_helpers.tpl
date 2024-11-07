@@ -49,3 +49,7 @@ Selector labels
 app.kubernetes.io/name: {{ include "s3proxy.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
+
+{{- define "isCertConfigValid" -}}
+{{- and (.Values.cert.commonName | not | empty) (.Values.cert.issuerRefName | not | empty) -}}
+{{- end -}}
