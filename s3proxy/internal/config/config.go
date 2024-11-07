@@ -20,7 +20,7 @@ func LoadConfig() error {
 func GetHostConfig() (string, error) {
 	// Ensure loading was successful before calling Get
 	if !k.Exists("s3proxy.host") {
-		return "", errors.New("unable to get 'S3PROXY_S3_HOST' env var")
+		return "", errors.New("unable to get 'S3PROXY_HOST' env var")
 	}
 	return k.String("s3proxy.host"), nil
 }

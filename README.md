@@ -10,7 +10,7 @@
 ## Usage (Docker)
 
 ```bash
-docker run ghcr.io/intrinsec/s3proxy --rm -p 80:4433 -e AWS_ACCESS_KEY_ID="XXX" -e AWS_SECRET_ACCESS_KEY="XXX" -e S3PROXY_ENCRYPT_KEY="GENERATE_A_RANDOM_STRING" -e S3PROXY_S3_HOST="s3.fr-par.scw.cloud" -e S3PROXY_DEKTAG_NAME="isec"
+docker run ghcr.io/intrinsec/s3proxy --rm -p 80:4433 -e AWS_ACCESS_KEY_ID="XXX" -e AWS_SECRET_ACCESS_KEY="XXX" -e S3PROXY_ENCRYPT_KEY="GENERATE_A_RANDOM_STRING" -e S3PROXY_HOST="s3.fr-par.scw.cloud" -e S3PROXY_DEKTAG_NAME="isec"
 ```
 
 ## Usage (Kubernetes - Helm)

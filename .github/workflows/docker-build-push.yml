@@ -26,6 +26,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set TARGET_PLATFORMS based on branch (arm only on main)
+        id: set-platforms
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "TARGET_PLATFORMS=linux/amd64" >> $GITHUB_ENV
+          fi
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

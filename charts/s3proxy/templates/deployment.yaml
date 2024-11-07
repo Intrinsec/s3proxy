@@ -52,7 +52,7 @@ spec:
               secretKeyRef:
                 name: s3proxy
                 key: encryptkey
-          - name: S3PROXY_S3_HOST
+          - name: S3PROXY_HOST
             value: {{ .Values.config.host | quote }}
           ports:
             - name: http
