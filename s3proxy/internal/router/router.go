@@ -77,7 +77,7 @@ func New(region, endpoint string, forwardMultipartReqs bool, log *logger.Logger)
 // Currently routing logic and request handling are integrated.
 func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 
-	// Handling liveness and readiness endpoints
+    // Handling liveness and readiness endpoints
     if req.Method == "GET" && req.URL.Path == "/healthz" {
         w.WriteHeader(http.StatusOK)
         w.Write([]byte("ok"))
