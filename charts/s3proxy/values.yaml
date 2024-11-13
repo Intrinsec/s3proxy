@@ -13,9 +13,11 @@ fullnameOverride: ""
 # By default, listenning TLS with files /etc/s3proxy/certs/s3proxy.crt & /etc/s3proxy/certs/s3proxy.key
 args: ["--level=-4"]
 
-cert: {} # From CertManager CRD
-  # commonName: "*.s3proxy.internal.company.com"
+cert: # From CertManager CRD
+  enable: false
+  issuerRefKind: ClusterIssuer
   # issuerRefName: internal-company-com
+  # commonName: "*.s3proxy.internal.company.com"
 
 config:
   host: s3.us-east-1.amazonaws.com

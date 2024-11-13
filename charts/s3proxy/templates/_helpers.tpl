@@ -51,5 +51,21 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{- define "isCertConfigValid" -}}
-{{- and (.Values.cert.commonName | not | empty) (.Values.cert.issuerRefName | not | empty) -}}
+{{- .Values.cert.enable -}}
 {{- end -}}
+
+{{/*
+Check if a specific value is provided; if it exists, return that value.
+Parameters:
+- .HasValue: The value to check, often passed from .Values in Helm.
+- .Context: The Helm context (.), used to access release-specific details like namespace.
+If .HasValue exists, it will be returned. If not, a default fully qualified service name
+is returned in the format "<release fullname>.<namespace>.svc.cluster.local".
+*/}}
+{{- define "checkCertDefaultValue" -}}
+{{- if .HasValue -}}
+{{- .HasValue | quote -}}
+{{- else -}}
+{{- include "s3proxy.fullname" .Context -}}.{{- .Context.Release.Namespace -}}.svc.cluster.local
+{{- end -}}
+{{- end }}
