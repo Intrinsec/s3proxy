@@ -4,12 +4,12 @@ kind: Certificate
 metadata:
   name: cert-s3proxy-tls
 spec:
-  commonName: {{ .Values.cert.commonName | quote }}
+  commonName: {{ include "checkCertDefaultValue" (dict "HasValue" .Values.cert.commonName "Context" .) }}
   dnsNames:
-  - {{ include "s3proxy.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  - {{ include "checkCertDefaultValue" (dict "HasValue" .Values.cert.dnsName "Context" .) }}
   issuerRef:
     group: cert-manager.io
-    kind: ClusterIssuer
+    kind: {{ .Values.cert.issuerRefKind }}
     name: {{ .Values.cert.issuerRefName | quote }}
   secretName: cert-s3proxy-tls
   usages:
