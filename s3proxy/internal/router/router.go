@@ -76,6 +76,19 @@ func New(region, endpoint string, forwardMultipartReqs bool, log *logger.Logger)
 // Ideally we could separate routing logic, request handling and s3 interactions.
 // Currently routing logic and request handling are integrated.
 func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
+
+    // Handling liveness and readiness endpoints
+    if req.Method == "GET" && req.URL.Path == "/healthz" {
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("ok"))
+        return
+    }
+    if req.Method == "GET" && req.URL.Path == "/readyz" {
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("ok"))
+        return
+    }
+
 	client, err := s3.NewClient(r.region)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

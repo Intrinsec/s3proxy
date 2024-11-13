@@ -4,5 +4,5 @@ description: A Helm chart for use s3proxy in K8s
 annotations:
   org.opencontainers.image.source: "https://github.com/intrinsec/s3proxy/"
 type: application
-version: 1.2.0
-appVersion: "1.2.0"
+version: 1.3.0
+appVersion: "1.3.0"
