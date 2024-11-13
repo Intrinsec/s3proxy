@@ -59,11 +59,15 @@ resources:
     memory: 128Mi
 
 livenessProbe:
-  tcpSocket:
+  httpGet:
+    path: /healthz  # Liveness endpoint
     port: 4433
+    scheme: HTTPS
 readinessProbe:
-  tcpSocket:
+  httpGet:
+    path: /readyz  # Readiness endpoint
     port: 4433
+    scheme: HTTPS
 
 autoscaling:
   enabled: false
