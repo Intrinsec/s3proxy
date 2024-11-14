@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/router"
@@ -79,14 +80,26 @@ func main() {
 func runServer(flags cmdFlags, log *logger.Logger) error {
 	log.WithField("ip", flags.ip).WithField("port", defaultPort).WithField("region", flags.region).Info("listening")
 
-	router, err := router.New(flags.region, flags.kmsEndpoint, flags.forwardMultipartReqs, log)
+	routerInstance, err := router.New(flags.region, flags.kmsEndpoint, flags.forwardMultipartReqs, log)
 	if err != nil {
 		return fmt.Errorf("creating router: %w", err)
 	}
 
+	h := http.HandlerFunc(routerInstance.Serve)
+
+	throttling := config.GetThrottlingRequestsMax()
+	if throttling != 0 {
+		log.WithField("throttling_requestsmax", throttling).Info("Throttling is enable")
+		throttler := router.NewThrottlingMiddleware(throttling, 10*time.Second)
+		// Explicitly convert h to http.Handler so it can be used with Throttle
+		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			throttler.Throttle(h).ServeHTTP(w, r)
+		})
+	}
+
 	server := http.Server{
 		Addr:    fmt.Sprintf("%s:%d", flags.ip, defaultPort),
-		Handler: http.HandlerFunc(router.Serve),
+		Handler: h,
 		// Disable HTTP/2. Serving HTTP/2 will cause some clients to use HTTP/2.
 		// It seems like AWS S3 does not support HTTP/2.
 		// Having HTTP/2 enabled will at least cause the aws-sdk-go V1 copy-object operation to fail.
