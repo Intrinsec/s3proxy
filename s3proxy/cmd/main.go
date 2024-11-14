@@ -86,20 +86,21 @@ func runServer(flags cmdFlags, log *logger.Logger) error {
 	}
 
 	h := http.HandlerFunc(routerInstance.Serve)
+	hMdw := h
 
 	throttling := config.GetThrottlingRequestsMax()
 	if throttling != 0 {
 		log.WithField("throttling_requestsmax", throttling).Info("Throttling is enable")
 		throttler := router.NewThrottlingMiddleware(throttling, 10*time.Second)
 		// Explicitly convert h to http.Handler so it can be used with Throttle
-		h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hMdw = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			throttler.Throttle(h).ServeHTTP(w, r)
 		})
 	}
 
 	server := http.Server{
 		Addr:    fmt.Sprintf("%s:%d", flags.ip, defaultPort),
-		Handler: h,
+		Handler: hMdw,
 		// Disable HTTP/2. Serving HTTP/2 will cause some clients to use HTTP/2.
 		// It seems like AWS S3 does not support HTTP/2.
 		// Having HTTP/2 enabled will at least cause the aws-sdk-go V1 copy-object operation to fail.
