@@ -40,3 +40,7 @@ func GetEncryptKey() (string, error) {
 	}
 	return k.String("s3proxy.encrypt.key"), nil
 }
+
+func GetThrottlingRequestsMax() int {
+	return k.Int("s3proxy.throttling.requestsmax")
+}
