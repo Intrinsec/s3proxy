@@ -21,6 +21,7 @@ cert: # From CertManager CRD
 
 config:
   host: s3.us-east-1.amazonaws.com
+  # throttling: 5
   # accessKey: CHANGEME
   # secretKey: CHANGEME
   # encryptKey: CHANGEME

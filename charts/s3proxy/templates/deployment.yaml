@@ -54,6 +54,10 @@ spec:
                 key: encryptkey
           - name: S3PROXY_HOST
             value: {{ .Values.config.host | quote }}
+          {{- if .Values.config.throttling }}
+          - name: S3PROXY_THROTTLING_REQUESTSMAX
+            value: {{ .Values.config.throttling | quote }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
