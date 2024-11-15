@@ -22,6 +22,7 @@ import (
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/google/uuid"
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/crypto"
@@ -91,7 +92,11 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		} else {
-			o.log.WithField("requestID", requestID).WithField("error", fmt.Sprintf("%+v", err)).Error("GetObject sending request to S3")
+			unwrappedErr := err
+			for unwrappedErr != nil {
+				o.log.WithField("requestID", requestID).WithField("error_type", fmt.Sprintf("%T", err)).WithField("error", unwrappedErr).Error("GetObject sending request to S3 (Inspecting nested error)")
+				unwrappedErr = errors.Unwrap(unwrappedErr)
+			}
 		}
 		return
 	}
