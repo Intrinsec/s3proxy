@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -21,7 +22,6 @@ import (
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/smithy-go"
 	"github.com/google/uuid"
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/crypto"
@@ -72,7 +72,6 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending request to S3")
 
 		var httpResponseErr *awshttp.ResponseError
-		var operationErr *smithy.OperationError
 		if errors.As(err, &httpResponseErr) {
 			// We want to forward error codes from the s3 API to clients as much as possible.
 			code := httpResponseErr.HTTPStatusCode()
@@ -91,8 +90,8 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			}
 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-		} else if errors.As(err, &operationErr) {
-			o.log.WithField("requestID", requestID).WithField("operationErr", operationErr).Error("GetObject sending request to S3 (smithy.OperationError)")
+		} else {
+			o.log.WithField("requestID", requestID).WithField("error", fmt.Sprintf("%+v", err)).Error("GetObject sending request to S3")
 		}
 		return
 	}
