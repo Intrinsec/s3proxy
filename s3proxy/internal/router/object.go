@@ -74,6 +74,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &httpResponseErr) {
 			// We want to forward error codes from the s3 API to clients as much as possible.
 			code := httpResponseErr.HTTPStatusCode()
+			o.log.WithField("requestID", requestID).WithField("code", code).WithField("httpResponseErr", httpResponseErr).Error("GetObject sending request to S3 (awshttp.ResponseError)")
 			if code != 0 {
 				var s3internalErr *s3internal.ErrorRawResponse
 				if errors.As(err, &s3internalErr) {
