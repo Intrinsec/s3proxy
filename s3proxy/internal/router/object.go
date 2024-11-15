@@ -89,6 +89,12 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			}
 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
+		} else {
+			unwrappedErr := err
+			for unwrappedErr != nil {
+				o.log.WithField("requestID", requestID).WithField("error", unwrappedErr).Error("GetObject sending request to S3 (Inspecting nested error)")
+				unwrappedErr = errors.Unwrap(unwrappedErr)
+			}
 		}
 		return
 	}
