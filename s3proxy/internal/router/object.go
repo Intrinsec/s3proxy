@@ -66,7 +66,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		versionID = []string{""}
 	}
 
-	output, err := o.client.GetObject(r.Context(), o.bucket, o.key, versionID[0], o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
+	output, err := o.client.GetObject(context.WithoutCancel(r.Context()), o.bucket, o.key, versionID[0], o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
 	if err != nil {
 		// log with Info as it might be expected behavior (e.g. object not found).
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending request to S3")
