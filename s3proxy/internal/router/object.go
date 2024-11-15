@@ -92,7 +92,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		} else {
 			unwrappedErr := err
 			for unwrappedErr != nil {
-				o.log.WithField("requestID", requestID).WithField("error", unwrappedErr).Error("GetObject sending request to S3 (Inspecting nested error)")
+				o.log.WithField("requestID", requestID).WithField("error_type", fmt.Sprintf("%T", err)).WithField("error", unwrappedErr).Error("GetObject sending request to S3 (Inspecting nested error)")
 				unwrappedErr = errors.Unwrap(unwrappedErr)
 			}
 		}
