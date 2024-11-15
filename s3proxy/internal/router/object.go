@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -157,7 +158,11 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write(plaintext); err != nil {
-			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending response")
+			if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+				o.log.WithField("requestID", requestID).Info("Client closed the connection")
+			} else {
+				o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending response")
+			}
 		}
 	}
 }
