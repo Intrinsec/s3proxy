@@ -11,7 +11,6 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -90,12 +89,6 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			}
 
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-		} else {
-			unwrappedErr := err
-			for unwrappedErr != nil {
-				o.log.WithField("requestID", requestID).WithField("error_type", fmt.Sprintf("%T", err)).WithField("error", unwrappedErr).Error("GetObject sending request to S3 (Inspecting nested error)")
-				unwrappedErr = errors.Unwrap(unwrappedErr)
-			}
 		}
 		return
 	}
@@ -176,7 +169,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	}
 	o.metadata[dekTag] = hex.EncodeToString(encryptedDEK)
 
-	output, err := o.client.PutObject(r.Context(), o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
+	output, err := o.client.PutObject(context.WithoutCancel(r.Context()), o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
 	if err != nil {
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject sending request to S3")
 
