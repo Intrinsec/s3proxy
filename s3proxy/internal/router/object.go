@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
@@ -65,7 +66,8 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		versionID = []string{""}
 	}
 
-	output, err := o.client.GetObject(r.Context(), o.bucket, o.key, versionID[0], o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
+	output, err := o.client.GetObject(context.WithoutCancel(r.Context()), o.bucket, o.key, versionID[0], o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
+
 	if err != nil {
 		// log with Info as it might be expected behavior (e.g. object not found).
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending request to S3")
@@ -74,6 +76,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &httpResponseErr) {
 			// We want to forward error codes from the s3 API to clients as much as possible.
 			code := httpResponseErr.HTTPStatusCode()
+			o.log.WithField("requestID", requestID).WithField("code", code).WithField("httpResponseErr", httpResponseErr).Error("GetObject sending request to S3 (awshttp.ResponseError)")
 			if code != 0 {
 				var s3internalErr *s3internal.ErrorRawResponse
 				if errors.As(err, &s3internalErr) {
@@ -148,9 +151,19 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(plaintext); err != nil {
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending response")
+	select {
+	case <-r.Context().Done():
+		o.log.WithField("requestID", requestID).Info("Request was canceled by client")
+		return
+	default:
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write(plaintext); err != nil {
+			if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+				o.log.WithField("requestID", requestID).Info("Client closed the connection")
+			} else {
+				o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending response")
+			}
+		}
 	}
 }
 
@@ -168,7 +181,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	}
 	o.metadata[dekTag] = hex.EncodeToString(encryptedDEK)
 
-	output, err := o.client.PutObject(r.Context(), o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
+	output, err := o.client.PutObject(context.WithoutCancel(r.Context()), o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
 	if err != nil {
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject sending request to S3")
 
