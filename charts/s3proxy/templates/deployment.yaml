@@ -35,7 +35,8 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args: {{ .Values.args }}
+          args:
+            {{- toYaml .Values.args | nindent 12 }}
           env:
           - name: AWS_ACCESS_KEY_ID
             valueFrom:
