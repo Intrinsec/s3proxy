@@ -5,7 +5,7 @@
 ## Features
 - **Automatic encryption** for all PUT requests before storage on S3
 - **Transparent decryption** of GET requests when retrieving data from S3
-- **Easy setup**: simply run the proxy and direct your HTTP requests through it.
+- **Easy setup**: run the proxy and direct your HTTP requests through it.
 
 ## Usage (Docker)
 
