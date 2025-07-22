@@ -157,9 +157,6 @@ func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 			return
 		}
 		w.WriteHeader(resp.StatusCode)
-
-		log.WithField("path", req.URL.Path).WithField("code", resp.StatusCode).Debug("forwarding result")
-
 		if body == nil {
 			return
 		}

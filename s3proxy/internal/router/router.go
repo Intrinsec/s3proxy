@@ -264,6 +264,7 @@ func parseRetentionTime(raw string) (time.Time, error) {
 // repackage implements all modifications we need to do to an incoming request that we want to forward to the s3 API.
 func repackage(r *http.Request) http.Request {
 	req := r.Clone(r.Context())
+	req.URL.RawPath = ""
 
 	// HTTP clients are not supposed to set this field, however when we receive a request it is set.
 	// So, we unset it.
