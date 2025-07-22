@@ -129,6 +129,8 @@ func NewClient(region string) (*Client, error) {
 	client := s3.NewFromConfig(clientCfg, func(o *s3.Options) {
 		o.UsePathStyle = true // Ensure "path-style" is used with MinIO
 		o.BaseEndpoint = aws.String("https://" + host)
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 		o.APIOptions = append(o.APIOptions, addCaptureRawResponseDeserializeMiddleware())
 		o.APIOptions = append(o.APIOptions, addCaptureRawResponseInitializeMiddleware())
 	})
