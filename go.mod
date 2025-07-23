@@ -1,6 +1,6 @@
 module github.com/intrinsec
 
-go 1.23.2
+go 1.24.5
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.6
