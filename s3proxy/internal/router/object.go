@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -53,6 +54,17 @@ type object struct {
 	sseCustomerKey            string
 	sseCustomerKeyMD5         string
 	log                       *logger.Logger
+}
+
+const freeOSMemoryThreshold int = 100 * 1024 * 1024 // 100 MiB
+
+func setHeaderIfNonEmpty(h http.Header, key string, val *string) {
+	if val != nil {
+		v := strings.TrimSpace(*val)
+		if v != "" {
+			h.Set(key, v)
+		}
+	}
 }
 
 // get is a http.HandlerFunc that implements the GET method for objects.
@@ -101,40 +113,44 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	if output.Expiration != nil {
 		w.Header().Set("x-amz-expiration", *output.Expiration)
 	}
-	if output.ChecksumCRC32 != nil {
-		w.Header().Set("x-amz-checksum-crc32", *output.ChecksumCRC32)
-	}
-	if output.ChecksumCRC32C != nil {
-		w.Header().Set("x-amz-checksum-crc32c", *output.ChecksumCRC32C)
-	}
-	if output.ChecksumSHA1 != nil {
-		w.Header().Set("x-amz-checksum-sha1", *output.ChecksumSHA1)
-	}
-	if output.ChecksumSHA256 != nil {
-		w.Header().Set("x-amz-checksum-sha256", *output.ChecksumSHA256)
-	}
-	if output.SSECustomerAlgorithm != nil {
-		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", *output.SSECustomerAlgorithm)
-	}
-	if output.SSECustomerKeyMD5 != nil {
-		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", *output.SSECustomerKeyMD5)
-	}
-	if output.SSEKMSKeyId != nil {
-		w.Header().Set("x-amz-server-side-encryption-aws-kms-key-id", *output.SSEKMSKeyId)
-	}
 	if output.ServerSideEncryption != "" {
 		w.Header().Set("x-amz-server-side-encryption-context", string(output.ServerSideEncryption))
 	}
+	setHeaderIfNonEmpty(w.Header(), "x-amz-expiration", output.Expiration)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-checksum-crc32", output.ChecksumCRC32)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-checksum-crc32c", output.ChecksumCRC32C)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-checksum-sha1", output.ChecksumSHA1)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-checksum-sha256", output.ChecksumSHA256)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-server-side-encryption-customer-algorithm", output.SSECustomerAlgorithm)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-server-side-encryption-customer-key-MD5", output.SSECustomerKeyMD5)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-server-side-encryption-aws-kms-key-id", output.SSEKMSKeyId)
 
-	body, err := io.ReadAll(output.Body)
-	if err != nil {
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject reading S3 response")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	var body []byte
+	if output.ContentLength == nil {
+		// fallback on io.ReadAll if ContentLength is unknown
+		body, err = io.ReadAll(output.Body)
+		if err != nil {
+			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject reading S3 response")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		n := int(*output.ContentLength)
+		// Preallocate the buffer from Content-Length and fill it with io.ReadFull.
+		// This avoids the incremental growth and extra copies that io.ReadAll incurs
+		// when the final size is unknown, which can blow up RAM on large payloads.
+		// If Content-Length is missing or bogus we fall back to ReadAll below.
+		body = make([]byte, n)
+		if _, err := io.ReadFull(output.Body, body); err != nil {
+			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject reading S3 response")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	plaintext := body
 	rawEncryptedDEK, ok := output.Metadata[dekTag]
+	defer output.Body.Close()
 	if ok {
 		encryptedDEK, err := hex.DecodeString(rawEncryptedDEK)
 		if err != nil {
@@ -144,6 +160,12 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		}
 
 		plaintext, err = crypto.Decrypt(body, encryptedDEK, o.kek)
+		// We do not need to keep body anymore. Because it can be gigabytes in size - free it ASAP
+		bodyLen := len(body)
+		body = nil
+		if bodyLen >= freeOSMemoryThreshold {
+			debug.FreeOSMemory()
+		}
 		if err != nil {
 			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decrypting response")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -151,9 +173,14 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	plaintextLen := len(plaintext)
 	select {
 	case <-r.Context().Done():
 		o.log.WithField("requestID", requestID).Info("Request was canceled by client")
+		plaintext = nil
+		if plaintextLen >= freeOSMemoryThreshold {
+			debug.FreeOSMemory()
+		}
 		return
 	default:
 		w.WriteHeader(http.StatusOK)
@@ -164,6 +191,10 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 				o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending response")
 			}
 		}
+	}
+	plaintext = nil
+	if plaintextLen >= freeOSMemoryThreshold {
+		debug.FreeOSMemory()
 	}
 }
 
@@ -178,6 +209,12 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// We do not need to keep data anymore. Because it can be gigabytes in size - free it ASAP
+	dataLen := len(o.data)
+	o.data = nil
+	if dataLen >= freeOSMemoryThreshold {
+		debug.FreeOSMemory()
 	}
 	o.metadata[dekTag] = hex.EncodeToString(encryptedDEK)
 
@@ -195,42 +232,29 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	w.Header().Set("x-amz-server-side-encryption", string(output.ServerSideEncryption))
-
-	if output.VersionId != nil {
-		w.Header().Set("x-amz-version-id", *output.VersionId)
+	cipherTextLen := len(ciphertext)
+	ciphertext = nil
+	if cipherTextLen > freeOSMemoryThreshold {
+		debug.FreeOSMemory()
+	}
+	ssd_enc := string(output.ServerSideEncryption)
+	if ssd_enc != "" { // It can be empty for empty files, at least on Hetzner storage
+		w.Header().Set("x-amz-server-side-encryption", ssd_enc)
 	}
 	if output.ETag != nil {
 		w.Header().Set("ETag", strings.Trim(*output.ETag, "\""))
 	}
-	if output.Expiration != nil {
-		w.Header().Set("x-amz-expiration", *output.Expiration)
-	}
-	if output.ChecksumCRC32 != nil {
-		w.Header().Set("x-amz-checksum-crc32", *output.ChecksumCRC32)
-	}
-	if output.ChecksumCRC32C != nil {
-		w.Header().Set("x-amz-checksum-crc32c", *output.ChecksumCRC32C)
-	}
-	if output.ChecksumSHA1 != nil {
-		w.Header().Set("x-amz-checksum-sha1", *output.ChecksumSHA1)
-	}
-	if output.ChecksumSHA256 != nil {
-		w.Header().Set("x-amz-checksum-sha256", *output.ChecksumSHA256)
-	}
-	if output.SSECustomerAlgorithm != nil {
-		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", *output.SSECustomerAlgorithm)
-	}
-	if output.SSECustomerKeyMD5 != nil {
-		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", *output.SSECustomerKeyMD5)
-	}
-	if output.SSEKMSKeyId != nil {
-		w.Header().Set("x-amz-server-side-encryption-aws-kms-key-id", *output.SSEKMSKeyId)
-	}
-	if output.SSEKMSEncryptionContext != nil {
-		w.Header().Set("x-amz-server-side-encryption-context", *output.SSEKMSEncryptionContext)
-	}
+
+	setHeaderIfNonEmpty(w.Header(), "x-amz-version-id", output.VersionId)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-expiration", output.Expiration)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-checksum-crc32", output.ChecksumCRC32)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-checksum-crc32c", output.ChecksumCRC32C)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-checksum-sha1", output.ChecksumSHA1)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-checksum-sha256", output.ChecksumSHA256)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-server-side-encryption-customer-algorithm", output.SSECustomerAlgorithm)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-server-side-encryption-customer-key-MD5", output.SSECustomerKeyMD5)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-server-side-encryption-aws-kms-key-id", output.SSEKMSKeyId)
+	setHeaderIfNonEmpty(w.Header(), "x-amz-server-side-encryption-context", output.SSEKMSEncryptionContext)
 
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(nil); err != nil {

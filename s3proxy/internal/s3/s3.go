@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -60,21 +61,47 @@ func addCaptureRawResponseDeserializeMiddleware() func(*middleware.Stack) error 
 		) {
 			out, metadata, err = next.HandleDeserialize(ctx, in)
 			if resp, ok := out.RawResponse.(*smithyhttp.Response); ok {
-				// Clone the response body
-				var buf bytes.Buffer
-				body := resp.Body
-				tee := io.NopCloser(io.TeeReader(body, &buf))
+				// It is better not to clone the response body for successful responses
+				// because it can consume a lot of memory for large responses and we can not free it ASAP
+				if resp.StatusCode >= 400 {
+					var bodyBytes []byte
 
-				// Replace the body in the response with the cloned body
-				resp.Body = tee
+					if cl := resp.Header.Get("Content-Length"); cl != "" {
+						if n64, perr := strconv.ParseInt(cl, 10, 64); perr == nil && n64 >= 0 {
+							n := int(n64)
+							bodyBytes = make([]byte, n)
+							// Preallocate the buffer from Content-Length and fill it with io.ReadFull.
+							// This avoids the incremental growth and extra copies that io.ReadAll incurs
+							// when the final size is unknown, which can blow up RAM on large payloads.
+							// If Content-Length is missing or bogus we fall back to ReadAll below.
+							if _, rerr := io.ReadFull(resp.Body, bodyBytes); rerr != nil {
+								wrap := fmt.Errorf("capture raw response (prealloc) failed: %w", rerr)
+								if err != nil {
+									return out, metadata, fmt.Errorf("%v; original deserialize error: %w", wrap, err)
+								}
+								return out, metadata, wrap
+							}
+						}
+					}
 
-				bodyBytes, _ := io.ReadAll(resp.Body)
-
-				// Store the cloned body in metadata
-				metadata.Set(RawResponseKey{}, string(bodyBytes))
-
-				// Restore the original body for further processing
-				resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+					if bodyBytes == nil {
+						// Fallback: previous behavior (unbounded ReadAll).
+						// NOTE: this may allocate for large bodies; we only use it when CL is missing/invalid.
+						b, rerr := io.ReadAll(resp.Body)
+						if rerr != nil {
+							wrap := fmt.Errorf("capture raw response (ReadAll) failed: %w", rerr)
+							if err != nil {
+								return out, metadata, fmt.Errorf("%v; original deserialize error: %w", wrap, err)
+							}
+							return out, metadata, wrap
+						}
+						bodyBytes = b
+					}
+					// Restore the original body for further processing
+					resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+				}
+			} else {
+				metadata.Set(RawResponseKey{}, "")
 			}
 			return out, metadata, err
 		}), middleware.After)
