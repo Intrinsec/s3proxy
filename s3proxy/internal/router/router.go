@@ -81,12 +81,36 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 
 	client, err := s3.NewClient(r.region, r.log)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		r.log.WithError(err).Error("failed to create S3 client")
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	var key, bucket string
 	matchingPath := match(req.URL.Path, bucketAndKeyPattern, &bucket, &key)
+
+	// Validate bucket and key if we have a matching path
+	if matchingPath {
+		if err := config.ValidateBucketName(bucket); err != nil {
+			r.log.WithError(err).WithField("bucket", bucket).Warn("invalid bucket name")
+			http.Error(w, fmt.Sprintf("invalid bucket name: %s", err.Error()), http.StatusBadRequest)
+			return
+		}
+		if err := config.ValidateObjectKey(key); err != nil {
+			r.log.WithError(err).WithField("key", key).Warn("invalid object key")
+			http.Error(w, fmt.Sprintf("invalid object key: %s", err.Error()), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Validate content length for PUT requests
+	if req.Method == http.MethodPut && req.ContentLength > 0 {
+		if err := config.ValidateContentLength(req.ContentLength); err != nil {
+			r.log.WithError(err).WithField("content_length", req.ContentLength).Warn("invalid content length")
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
 
 	h := r.getHandler(req, client, matchingPath, key, bucket)
 	h.ServeHTTP(w, req)
@@ -379,7 +403,10 @@ func (r Router) handleHealthEndpoints(w http.ResponseWriter, req *http.Request) 
 	if req.Method == http.MethodGet && (req.URL.Path == "/healthz" || req.URL.Path == "/readyz") {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("ok")); err != nil {
+			// Log the error but don't fail the health check
 			r.log.WithError(err).Error("failed to write health check response")
+			// Try to set status code in case write partially failed
+			w.WriteHeader(http.StatusInternalServerError)
 		}
 		return true
 	}

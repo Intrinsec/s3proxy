@@ -68,6 +68,11 @@ func main() {
 		panic(err)
 	}
 
+	// Validate configuration at startup
+	if err := config.ValidateConfiguration(); err != nil {
+		log.WithError(err).Fatal("configuration validation failed")
+	}
+
 	if flags.forwardMultipartReqs {
 		log.Warn("configured to forward multipart uploads, this may leak data to AWS")
 	}

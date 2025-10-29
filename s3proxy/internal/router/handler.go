@@ -16,9 +16,19 @@ import (
 	"time"
 
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/s3"
 	logger "github.com/sirupsen/logrus"
 )
+
+// getKEK retrieves the key encryption key
+func getKEK() ([32]byte, error) {
+	encryptKey, err := config.GetEncryptKey()
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("getting encryption key: %w", err)
+	}
+	return generateKEKFromString(encryptKey), nil
+}
 
 func handleGetObject(client *s3.Client, key string, bucket string, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
@@ -29,11 +39,25 @@ func handleGetObject(client *s3.Client, key string, bucket string, log *logger.L
 			return
 		}
 
+		kek, err := getKEK()
+		if err != nil {
+			log.WithError(err).Error("failed to get KEK")
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		versionID := ""
+		if versionIDs, ok := req.URL.Query()["versionId"]; ok && len(versionIDs) > 0 {
+			versionID = versionIDs[0]
+		}
+
 		obj := object{
+			kek:                  kek,
 			client:               client,
 			key:                  key,
 			bucket:               bucket,
 			query:                req.URL.Query(),
+			versionID:            versionID,
 			sseCustomerAlgorithm: req.Header.Get("x-amz-server-side-encryption-customer-algorithm"),
 			sseCustomerKey:       req.Header.Get("x-amz-server-side-encryption-customer-key"),
 			sseCustomerKeyMD5:    req.Header.Get("x-amz-server-side-encryption-customer-key-MD5"),
@@ -46,10 +70,18 @@ func handleGetObject(client *s3.Client, key string, bucket string, log *logger.L
 func handlePutObject(client *s3.Client, key string, bucket string, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
+
+		kek, err := getKEK()
+		if err != nil {
+			log.WithError(err).Error("failed to get KEK")
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
-			log.WithField("error", err).Error("PutObject")
-			http.Error(w, fmt.Sprintf("reading body: %s", err.Error()), http.StatusInternalServerError)
+			log.WithField("error", err).Error("PutObject reading body")
+			http.Error(w, "failed to read request body", http.StatusInternalServerError)
 			return
 		}
 
@@ -95,6 +127,7 @@ func handlePutObject(client *s3.Client, key string, bucket string, log *logger.L
 		}
 
 		obj := object{
+			kek:                       kek,
 			client:                    client,
 			key:                       key,
 			bucket:                    bucket,
@@ -132,6 +165,7 @@ func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 		creds, err := cfg.Credentials.Retrieve(context.TODO())
 		if err != nil {
 			log.WithField("error", err).Error("unable to retrieve aws creds")
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -140,6 +174,7 @@ func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 		err = signer.SignHTTP(context.TODO(), creds, newReq, newReq.Header.Get("X-Amz-Content-Sha256"), "s3", cfg.Region, time.Now())
 		if err != nil {
 			log.WithField("error", err).Error("failed to sign request")
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -157,19 +192,19 @@ func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 		}
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			log.WithField("error", err).Error("ReadAll")
-			http.Error(w, fmt.Sprintf("reading body: %s", err.Error()), http.StatusInternalServerError)
+			log.WithField("error", err).Error("failed to read response body")
+			http.Error(w, "failed to read response", http.StatusInternalServerError)
 			return
 		}
+
 		w.WriteHeader(resp.StatusCode)
-		if body == nil {
+		if len(body) == 0 {
 			return
 		}
 
 		if _, err := w.Write(body); err != nil {
-			log.WithField("error", err).Error("Write")
-			http.Error(w, fmt.Sprintf("writing body: %s", err.Error()), http.StatusInternalServerError)
-			return
+			log.WithField("error", err).Error("failed to write response")
+			// Don't send error response as headers are already written
 		}
 	}
 }

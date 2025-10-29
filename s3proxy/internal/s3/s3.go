@@ -72,6 +72,8 @@ func addCaptureRawResponseDeserializeMiddleware(log *logger.Logger) func(*middle
 				bodyBytes, err := io.ReadAll(resp.Body)
 				if err != nil {
 					log.WithError(err).Error("failed to read response body")
+					// Return the error to prevent silent failures
+					return out, metadata, fmt.Errorf("reading response body: %w", err)
 				}
 
 				// Store the cloned body in metadata

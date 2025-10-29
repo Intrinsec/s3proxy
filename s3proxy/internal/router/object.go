@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -52,6 +53,7 @@ type object struct {
 	sseCustomerAlgorithm      string
 	sseCustomerKey            string
 	sseCustomerKeyMD5         string
+	versionID                 string
 	log                       *logger.Logger
 }
 
@@ -61,12 +63,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 
 	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Debug("getObject")
 
-	versionID, ok := o.query["versionId"]
-	if !ok {
-		versionID = []string{""}
-	}
-
-	output, err := o.client.GetObject(context.WithoutCancel(r.Context()), o.bucket, o.key, versionID[0], o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
+	output, err := o.client.GetObject(context.WithoutCancel(r.Context()), o.bucket, o.key, o.versionID, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
 
 	if err != nil {
 		// log with Info as it might be expected behavior (e.g. object not found).
@@ -78,10 +75,16 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 
 	setGetObjectHeaders(w, output)
 
+	defer func() {
+		if output.Body != nil {
+			_ = output.Body.Close()
+		}
+	}()
+
 	body, err := io.ReadAll(output.Body)
 	if err != nil {
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject reading S3 response")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to read response: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -90,15 +93,15 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		encryptedDEK, err := hex.DecodeString(rawEncryptedDEK)
 		if err != nil {
-			o.log.Error("GetObject decoding DEK", "error", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decoding DEK")
+			http.Error(w, "failed to decode encryption key", http.StatusInternalServerError)
 			return
 		}
 
 		plaintext, err = crypto.Decrypt(body, encryptedDEK, o.kek)
 		if err != nil {
 			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decrypting response")
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
 			return
 		}
 	}
