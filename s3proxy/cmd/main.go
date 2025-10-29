@@ -80,7 +80,7 @@ func main() {
 func runServer(flags cmdFlags, log *logger.Logger) error {
 	log.WithField("ip", flags.ip).WithField("port", defaultPort).WithField("region", flags.region).Info("listening")
 
-	routerInstance, err := router.New(flags.region, flags.kmsEndpoint, flags.forwardMultipartReqs, log)
+	routerInstance, err := router.New(flags.region, flags.forwardMultipartReqs, log)
 	if err != nil {
 		return fmt.Errorf("creating router: %w", err)
 	}

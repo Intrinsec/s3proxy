@@ -120,7 +120,12 @@ func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("forwarding")
 
-		newReq := repackage(req)
+		newReq, err := repackage(req)
+		if err != nil {
+			log.WithField("error", err).Error("failed to repackage request")
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
 
 		cfg := client.GetConfig()
 
@@ -132,14 +137,14 @@ func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 
 		signer := v4.NewSigner()
 
-		err = signer.SignHTTP(context.TODO(), creds, &newReq, newReq.Header.Get("X-Amz-Content-Sha256"), "s3", cfg.Region, time.Now())
+		err = signer.SignHTTP(context.TODO(), creds, newReq, newReq.Header.Get("X-Amz-Content-Sha256"), "s3", cfg.Region, time.Now())
 		if err != nil {
 			log.WithField("error", err).Error("failed to sign request")
 			return
 		}
 
 		httpClient := http.DefaultClient
-		resp, err := httpClient.Do(&newReq)
+		resp, err := httpClient.Do(newReq)
 		if err != nil {
 			log.WithField("error", err).Error("do request")
 			http.Error(w, fmt.Sprintf("do request: %s", err.Error()), http.StatusInternalServerError)
