@@ -351,14 +351,17 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 		})
 	}
 
+	// Forward if path doesn't match
 	if !matchingPath {
 		return handleForwards(s3Client, r.log)
 	}
 
+	// Check multipart operations first (if not forwarding them)
 	if handler := r.getMultipartHandler(req); handler != nil {
 		return handler
 	}
 
+	// Handle regular object operations
 	switch req.Method {
 	case http.MethodGet:
 		if !isUnwantedGetEndpoint(req.URL.Query()) {
@@ -370,6 +373,7 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 		}
 	}
 
+	// Forward all other requests
 	return handleForwards(s3Client, r.log)
 }
 
@@ -378,22 +382,23 @@ func (r Router) getMultipartHandler(req *http.Request) http.Handler {
 		return nil
 	}
 
-	switch req.Method {
-	case http.MethodPut:
-		if isUploadPart(req.Method, req.URL.Query()) {
-			return handleUploadPart(r.log)
-		}
-	case http.MethodPost:
-		if isCreateMultipartUpload(req.Method, req.URL.Query()) {
-			return handleCreateMultipartUpload(r.log)
-		}
-		if isCompleteMultipartUpload(req.Method, req.URL.Query()) {
-			return handleCompleteMultipartUpload(r.log)
-		}
-	case http.MethodDelete:
-		if isAbortMultipartUpload(req.Method, req.URL.Query()) {
-			return handleAbortMultipartUpload(r.log)
-		}
+	// Check all multipart operations regardless of HTTP method
+	// Let the is* functions determine if they match
+
+	if isUploadPart(req.Method, req.URL.Query()) {
+		return handleUploadPart(r.log)
+	}
+
+	if isCreateMultipartUpload(req.Method, req.URL.Query()) {
+		return handleCreateMultipartUpload(r.log)
+	}
+
+	if isCompleteMultipartUpload(req.Method, req.URL.Query()) {
+		return handleCompleteMultipartUpload(r.log)
+	}
+
+	if isAbortMultipartUpload(req.Method, req.URL.Query()) {
+		return handleAbortMultipartUpload(r.log)
 	}
 
 	return nil
