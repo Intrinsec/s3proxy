@@ -1,0 +1,62 @@
+version: "2"
+run:
+  tests: true
+linters:
+  enable:
+    - bodyclose
+    - gocognit
+    - goconst
+    - gocyclo
+    - gosec
+    - misspell
+    - revive
+    - staticcheck
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    gocyclo:
+      min-complexity: 15
+    gosec:
+      includes:
+        - G101
+        - G102
+        - G103
+        - G104
+        - G107
+        - G201
+        - G202
+        - G203
+        - G204
+        - G304
+        - G307
+        - G401
+        - G404
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - gocognit
+          - gocyclo
+          - gosec
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-same-issues: 5
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
