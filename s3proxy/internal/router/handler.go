@@ -46,7 +46,21 @@ func handleGetObject(client *s3.Client, key string, bucket string, log *logger.L
 func handlePutObject(client *s3.Client, key string, bucket string, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
-		body, err := io.ReadAll(req.Body)
+		var (
+			body []byte
+			err  error
+		)
+		if req.ContentLength > 0 {
+			n := int(req.ContentLength)
+			// Preallocate the buffer from Content-Length and fill it with io.ReadFull.
+			// This avoids the incremental growth and extra copies that io.ReadAll incurs
+			// when the final size is unknown, which can blow up RAM on large payloads.
+			// If Content-Length is missing or bogus we fall back to ReadAll below.
+			body = make([]byte, n)
+			_, err = io.ReadFull(req.Body, body)
+		} else {
+			body, err = io.ReadAll(req.Body)
+		}
 		if err != nil {
 			log.WithField("error", err).Error("PutObject")
 			http.Error(w, fmt.Sprintf("reading body: %s", err.Error()), http.StatusInternalServerError)
@@ -113,6 +127,7 @@ func handlePutObject(client *s3.Client, key string, bucket string, log *logger.L
 		}
 
 		put(obj.put)(w, req)
+		defer req.Body.Close()
 	}
 }
 
