@@ -1,0 +1,227 @@
+## workspace
+# github.com/aws/aws-sdk-go-v2 v1.41.5
+## explicit; go 1.24
+github.com/aws/aws-sdk-go-v2/aws
+github.com/aws/aws-sdk-go-v2/aws/arn
+github.com/aws/aws-sdk-go-v2/aws/defaults
+github.com/aws/aws-sdk-go-v2/aws/middleware
+github.com/aws/aws-sdk-go-v2/aws/protocol/query
+github.com/aws/aws-sdk-go-v2/aws/protocol/restjson
+github.com/aws/aws-sdk-go-v2/aws/protocol/xml
+github.com/aws/aws-sdk-go-v2/aws/ratelimit
+github.com/aws/aws-sdk-go-v2/aws/retry
+github.com/aws/aws-sdk-go-v2/aws/signer/internal/v4
+github.com/aws/aws-sdk-go-v2/aws/signer/v4
+github.com/aws/aws-sdk-go-v2/aws/transport/http
+github.com/aws/aws-sdk-go-v2/internal/auth
+github.com/aws/aws-sdk-go-v2/internal/auth/smithy
+github.com/aws/aws-sdk-go-v2/internal/context
+github.com/aws/aws-sdk-go-v2/internal/endpoints
+github.com/aws/aws-sdk-go-v2/internal/endpoints/awsrulesfn
+github.com/aws/aws-sdk-go-v2/internal/middleware
+github.com/aws/aws-sdk-go-v2/internal/rand
+github.com/aws/aws-sdk-go-v2/internal/sdk
+github.com/aws/aws-sdk-go-v2/internal/sdkio
+github.com/aws/aws-sdk-go-v2/internal/shareddefaults
+github.com/aws/aws-sdk-go-v2/internal/strings
+github.com/aws/aws-sdk-go-v2/internal/sync/singleflight
+github.com/aws/aws-sdk-go-v2/internal/timeconv
+# github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.8
+## explicit; go 1.24
+github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream
+github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream/eventstreamapi
+# github.com/aws/aws-sdk-go-v2/config v1.31.15
+## explicit; go 1.23
+github.com/aws/aws-sdk-go-v2/config
+# github.com/aws/aws-sdk-go-v2/credentials v1.18.19
+## explicit; go 1.23
+github.com/aws/aws-sdk-go-v2/credentials
+github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds
+github.com/aws/aws-sdk-go-v2/credentials/endpointcreds
+github.com/aws/aws-sdk-go-v2/credentials/endpointcreds/internal/client
+github.com/aws/aws-sdk-go-v2/credentials/processcreds
+github.com/aws/aws-sdk-go-v2/credentials/ssocreds
+github.com/aws/aws-sdk-go-v2/credentials/stscreds
+# github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.11
+## explicit; go 1.23
+github.com/aws/aws-sdk-go-v2/feature/ec2/imds
+github.com/aws/aws-sdk-go-v2/feature/ec2/imds/internal/config
+# github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.21
+## explicit; go 1.24
+github.com/aws/aws-sdk-go-v2/internal/configsources
+# github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.21
+## explicit; go 1.24
+github.com/aws/aws-sdk-go-v2/internal/endpoints/v2
+# github.com/aws/aws-sdk-go-v2/internal/ini v1.8.4
+## explicit; go 1.23
+github.com/aws/aws-sdk-go-v2/internal/ini
+# github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.22
+## explicit; go 1.24
+github.com/aws/aws-sdk-go-v2/internal/v4a
+github.com/aws/aws-sdk-go-v2/internal/v4a/internal/crypto
+github.com/aws/aws-sdk-go-v2/internal/v4a/internal/v4
+# github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.7
+## explicit; go 1.24
+github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding
+# github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.13
+## explicit; go 1.24
+github.com/aws/aws-sdk-go-v2/service/internal/checksum
+# github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.21
+## explicit; go 1.24
+github.com/aws/aws-sdk-go-v2/service/internal/presigned-url
+# github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.19.21
+## explicit; go 1.24
+github.com/aws/aws-sdk-go-v2/service/internal/s3shared
+github.com/aws/aws-sdk-go-v2/service/internal/s3shared/arn
+github.com/aws/aws-sdk-go-v2/service/internal/s3shared/config
+# github.com/aws/aws-sdk-go-v2/service/s3 v1.97.3
+## explicit; go 1.24
+github.com/aws/aws-sdk-go-v2/service/s3
+github.com/aws/aws-sdk-go-v2/service/s3/internal/arn
+github.com/aws/aws-sdk-go-v2/service/s3/internal/customizations
+github.com/aws/aws-sdk-go-v2/service/s3/internal/endpoints
+github.com/aws/aws-sdk-go-v2/service/s3/types
+# github.com/aws/aws-sdk-go-v2/service/sso v1.29.8
+## explicit; go 1.23
+github.com/aws/aws-sdk-go-v2/service/sso
+github.com/aws/aws-sdk-go-v2/service/sso/internal/endpoints
+github.com/aws/aws-sdk-go-v2/service/sso/types
+# github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.3
+## explicit; go 1.23
+github.com/aws/aws-sdk-go-v2/service/ssooidc
+github.com/aws/aws-sdk-go-v2/service/ssooidc/internal/endpoints
+github.com/aws/aws-sdk-go-v2/service/ssooidc/types
+# github.com/aws/aws-sdk-go-v2/service/sts v1.38.9
+## explicit; go 1.23
+github.com/aws/aws-sdk-go-v2/service/sts
+github.com/aws/aws-sdk-go-v2/service/sts/internal/endpoints
+github.com/aws/aws-sdk-go-v2/service/sts/types
+# github.com/aws/smithy-go v1.24.2
+## explicit; go 1.24
+github.com/aws/smithy-go
+github.com/aws/smithy-go/auth
+github.com/aws/smithy-go/auth/bearer
+github.com/aws/smithy-go/container/private/cache
+github.com/aws/smithy-go/container/private/cache/lru
+github.com/aws/smithy-go/context
+github.com/aws/smithy-go/document
+github.com/aws/smithy-go/encoding
+github.com/aws/smithy-go/encoding/httpbinding
+github.com/aws/smithy-go/encoding/json
+github.com/aws/smithy-go/encoding/xml
+github.com/aws/smithy-go/endpoints
+github.com/aws/smithy-go/endpoints/private/rulesfn
+github.com/aws/smithy-go/internal/sync/singleflight
+github.com/aws/smithy-go/io
+github.com/aws/smithy-go/logging
+github.com/aws/smithy-go/metrics
+github.com/aws/smithy-go/middleware
+github.com/aws/smithy-go/private/requestcompression
+github.com/aws/smithy-go/ptr
+github.com/aws/smithy-go/rand
+github.com/aws/smithy-go/sync
+github.com/aws/smithy-go/time
+github.com/aws/smithy-go/tracing
+github.com/aws/smithy-go/transport/http
+github.com/aws/smithy-go/transport/http/internal/io
+github.com/aws/smithy-go/waiter
+# github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
+## explicit
+github.com/davecgh/go-spew/spew
+# github.com/google/uuid v1.6.0
+## explicit
+github.com/google/uuid
+# github.com/knadh/koanf v1.5.0
+## explicit; go 1.12
+github.com/knadh/koanf
+github.com/knadh/koanf/maps
+github.com/knadh/koanf/providers/env
+# github.com/kr/pretty v0.3.1
+## explicit; go 1.12
+# github.com/mitchellh/copystructure v1.2.0
+## explicit; go 1.15
+github.com/mitchellh/copystructure
+# github.com/mitchellh/mapstructure v1.5.0
+## explicit; go 1.14
+github.com/mitchellh/mapstructure
+# github.com/mitchellh/reflectwalk v1.0.2
+## explicit
+github.com/mitchellh/reflectwalk
+# github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
+## explicit
+github.com/pmezard/go-difflib/difflib
+# github.com/sirupsen/logrus v1.9.3
+## explicit; go 1.13
+github.com/sirupsen/logrus
+# github.com/stretchr/testify v1.11.1
+## explicit; go 1.17
+github.com/stretchr/testify/assert
+github.com/stretchr/testify/assert/yaml
+github.com/stretchr/testify/require
+# github.com/tink-crypto/tink-go/v2 v2.5.0
+## explicit; go 1.24.0
+github.com/tink-crypto/tink-go/v2/aead/aesgcm
+github.com/tink-crypto/tink-go/v2/aead/subtle
+github.com/tink-crypto/tink-go/v2/core/registry
+github.com/tink-crypto/tink-go/v2/insecuresecretdataaccess
+github.com/tink-crypto/tink-go/v2/internal/aead
+github.com/tink-crypto/tink-go/v2/internal/internalapi
+github.com/tink-crypto/tink-go/v2/internal/keygenregistry
+github.com/tink-crypto/tink-go/v2/internal/legacykeymanager
+github.com/tink-crypto/tink-go/v2/internal/outputprefix
+github.com/tink-crypto/tink-go/v2/internal/primitiveregistry
+github.com/tink-crypto/tink-go/v2/internal/protoserialization
+github.com/tink-crypto/tink-go/v2/internal/registryconfig
+github.com/tink-crypto/tink-go/v2/key
+github.com/tink-crypto/tink-go/v2/kwp/subtle
+github.com/tink-crypto/tink-go/v2/proto/aes_gcm_go_proto
+github.com/tink-crypto/tink-go/v2/proto/tink_go_proto
+github.com/tink-crypto/tink-go/v2/secretdata
+github.com/tink-crypto/tink-go/v2/subtle/random
+github.com/tink-crypto/tink-go/v2/tink
+# golang.org/x/crypto v0.45.0
+## explicit; go 1.24.0
+golang.org/x/crypto/chacha20
+golang.org/x/crypto/chacha20poly1305
+golang.org/x/crypto/hkdf
+golang.org/x/crypto/internal/alias
+golang.org/x/crypto/internal/poly1305
+# golang.org/x/sys v0.38.0
+## explicit; go 1.24.0
+golang.org/x/sys/cpu
+golang.org/x/sys/unix
+golang.org/x/sys/windows
+# google.golang.org/protobuf v1.36.10
+## explicit; go 1.23
+google.golang.org/protobuf/encoding/prototext
+google.golang.org/protobuf/encoding/protowire
+google.golang.org/protobuf/internal/descfmt
+google.golang.org/protobuf/internal/descopts
+google.golang.org/protobuf/internal/detrand
+google.golang.org/protobuf/internal/editiondefaults
+google.golang.org/protobuf/internal/encoding/defval
+google.golang.org/protobuf/internal/encoding/messageset
+google.golang.org/protobuf/internal/encoding/tag
+google.golang.org/protobuf/internal/encoding/text
+google.golang.org/protobuf/internal/errors
+google.golang.org/protobuf/internal/filedesc
+google.golang.org/protobuf/internal/filetype
+google.golang.org/protobuf/internal/flags
+google.golang.org/protobuf/internal/genid
+google.golang.org/protobuf/internal/impl
+google.golang.org/protobuf/internal/order
+google.golang.org/protobuf/internal/pragma
+google.golang.org/protobuf/internal/protolazy
+google.golang.org/protobuf/internal/set
+google.golang.org/protobuf/internal/strs
+google.golang.org/protobuf/internal/version
+google.golang.org/protobuf/proto
+google.golang.org/protobuf/reflect/protoreflect
+google.golang.org/protobuf/reflect/protoregistry
+google.golang.org/protobuf/runtime/protoiface
+google.golang.org/protobuf/runtime/protoimpl
+# gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c
+## explicit; go 1.11
+# gopkg.in/yaml.v3 v3.0.1
+## explicit
+gopkg.in/yaml.v3
