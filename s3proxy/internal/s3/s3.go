@@ -151,8 +151,13 @@ func NewClient(ctx context.Context, region string, log *slog.Logger) (*Client, e
 	client := s3.NewFromConfig(clientCfg, func(o *s3.Options) {
 		o.UsePathStyle = true // Ensure "path-style" is used with MinIO
 		o.BaseEndpoint = aws.String(scheme + "://" + host)
-		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
-		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+		// Compute a CRC32 on every upload so the backing store persists it and GetObject
+		// responses carry the header the SDK needs to actually validate the payload.
+		// With WhenRequired the SDK skips checksum work unless S3 mandates it, which left
+		// ciphertext objects without an at-rest checksum and surfaced a "Response has no
+		// supported checksum. Not validating response payload." SDK warning on every GET.
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenSupported
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenSupported
 		o.APIOptions = append(o.APIOptions, addCaptureRawResponseDeserializeMiddleware(log))
 		o.APIOptions = append(o.APIOptions, addCaptureRawResponseInitializeMiddleware())
 	})

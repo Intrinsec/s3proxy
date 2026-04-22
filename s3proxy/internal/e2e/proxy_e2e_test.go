@@ -52,7 +52,7 @@ func TestProxyRoundtripAgainstMinio(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	minioCtr, err := tcminio.Run(ctx, "minio/minio:RELEASE.2024-10-02T17-50-41Z")
+	minioCtr, err := tcminio.Run(ctx, "minio/minio:RELEASE.2025-09-07T16-13-09Z")
 	if err != nil {
 		t.Skipf("cannot start minio testcontainer (docker unavailable?): %v", err)
 	}
@@ -88,6 +88,9 @@ func TestProxyRoundtripAgainstMinio(t *testing.T) {
 	directClient := awss3.NewFromConfig(directCfg, func(o *awss3.Options) {
 		o.UsePathStyle = true
 		o.BaseEndpoint = aws.String("http://" + endpoint)
+		// Inspection-only client; disable response checksum validation so the SDK does
+		// not log "no supported checksum" warnings when we read the raw ciphertext.
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationUnset
 	})
 
 	_, err = directClient.CreateBucket(ctx, &awss3.CreateBucketInput{Bucket: aws.String(bucket)})
@@ -113,6 +116,10 @@ func TestProxyRoundtripAgainstMinio(t *testing.T) {
 	proxyClient := awss3.NewFromConfig(directCfg, func(o *awss3.Options) {
 		o.UsePathStyle = true
 		o.BaseEndpoint = aws.String(proxySrv.URL)
+		// The proxy returns decrypted plaintext and therefore cannot forward an
+		// at-rest ciphertext checksum. Disable SDK response validation on the test
+		// client so we do not log a spurious "no supported checksum" warning.
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationUnset
 	})
 
 	_, err = proxyClient.PutObject(ctx, &awss3.PutObjectInput{

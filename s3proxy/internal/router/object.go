@@ -198,18 +198,10 @@ func setPutObjectHeaders(w http.ResponseWriter, output *s3.PutObjectOutput) {
 	if output.Expiration != nil {
 		w.Header().Set("x-amz-expiration", *output.Expiration)
 	}
-	if output.ChecksumCRC32 != nil {
-		w.Header().Set("x-amz-checksum-crc32", *output.ChecksumCRC32)
-	}
-	if output.ChecksumCRC32C != nil {
-		w.Header().Set("x-amz-checksum-crc32c", *output.ChecksumCRC32C)
-	}
-	if output.ChecksumSHA1 != nil {
-		w.Header().Set("x-amz-checksum-sha1", *output.ChecksumSHA1)
-	}
-	if output.ChecksumSHA256 != nil {
-		w.Header().Set("x-amz-checksum-sha256", *output.ChecksumSHA256)
-	}
+	// Deliberately skip x-amz-checksum-* headers from the upstream PutObject response:
+	// the upstream computed those over the ciphertext the proxy uploaded, which is not
+	// the payload the downstream client sent. Forwarding them would make the client's
+	// SDK try to validate against the wrong digest.
 	if output.SSECustomerAlgorithm != nil {
 		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", *output.SSECustomerAlgorithm)
 	}
@@ -253,18 +245,9 @@ func setGetObjectHeaders(w http.ResponseWriter, output *s3.GetObjectOutput) {
 	if output.Expiration != nil {
 		w.Header().Set("x-amz-expiration", *output.Expiration)
 	}
-	if output.ChecksumCRC32 != nil {
-		w.Header().Set("x-amz-checksum-crc32", *output.ChecksumCRC32)
-	}
-	if output.ChecksumCRC32C != nil {
-		w.Header().Set("x-amz-checksum-crc32c", *output.ChecksumCRC32C)
-	}
-	if output.ChecksumSHA1 != nil {
-		w.Header().Set("x-amz-checksum-sha1", *output.ChecksumSHA1)
-	}
-	if output.ChecksumSHA256 != nil {
-		w.Header().Set("x-amz-checksum-sha256", *output.ChecksumSHA256)
-	}
+	// Deliberately skip x-amz-checksum-* headers from the upstream GetObject response:
+	// the proxy returns decrypted plaintext, but the upstream's checksum describes the
+	// ciphertext at rest. Forwarding it would make the client's SDK reject the body.
 	if output.SSECustomerAlgorithm != nil {
 		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", *output.SSECustomerAlgorithm)
 	}
