@@ -39,7 +39,6 @@ import (
 )
 
 var (
-	keyPattern          = regexp.MustCompile("/(.+)")
 	bucketAndKeyPattern = regexp.MustCompile("/([^/?]+)/(.+)")
 )
 
@@ -61,7 +60,7 @@ func generateKEKFromString(input string) [32]byte {
 }
 
 // New creates a new Router.
-func New(region, endpoint string, forwardMultipartReqs bool, log *logger.Logger) (Router, error) {
+func New(region string, forwardMultipartReqs bool, log *logger.Logger) (Router, error) {
 	result, err := config.GetEncryptKey()
 	if err != nil {
 		return Router{}, err
@@ -76,61 +75,44 @@ func New(region, endpoint string, forwardMultipartReqs bool, log *logger.Logger)
 // Ideally we could separate routing logic, request handling and s3 interactions.
 // Currently routing logic and request handling are integrated.
 func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
-
-    // Handling liveness and readiness endpoints
-    if req.Method == "GET" && req.URL.Path == "/healthz" {
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte("ok"))
-        return
-    }
-    if req.Method == "GET" && req.URL.Path == "/readyz" {
-        w.WriteHeader(http.StatusOK)
-        w.Write([]byte("ok"))
-        return
-    }
-
-	client, err := s3.NewClient(r.region)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if r.handleHealthEndpoints(w, req) {
 		return
 	}
 
-	var key string
-	var bucket string
-	var matchingPath bool
-	// if containsBucket(req.Host) {
-	// 	// BUCKET.s3.REGION.amazonaws.com
-	// 	parts := strings.Split(req.Host, ".")
-	// 	bucket = parts[0]
-
-	// 	matchingPath = match(req.URL.Path, keyPattern, &key)
-
-	// } else {
-	matchingPath = match(req.URL.Path, bucketAndKeyPattern, &bucket, &key)
-	// }
-
-	var h http.Handler
-
-	switch {
-	// intercept GetObject.
-	case matchingPath && req.Method == "GET" && !isUnwantedGetEndpoint(req.URL.Query()):
-		h = handleGetObject(client, key, bucket, r.log)
-	// intercept PutObject.
-	case matchingPath && req.Method == "PUT" && !isUnwantedPutEndpoint(req.Header, req.URL.Query()):
-		h = handlePutObject(client, key, bucket, r.log)
-	case !r.forwardMultipartReqs && matchingPath && isUploadPart(req.Method, req.URL.Query()):
-		h = handleUploadPart(r.log)
-	case !r.forwardMultipartReqs && matchingPath && isCreateMultipartUpload(req.Method, req.URL.Query()):
-		h = handleCreateMultipartUpload(r.log)
-	case !r.forwardMultipartReqs && matchingPath && isCompleteMultipartUpload(req.Method, req.URL.Query()):
-		h = handleCompleteMultipartUpload(r.log)
-	case !r.forwardMultipartReqs && matchingPath && isAbortMultipartUpload(req.Method, req.URL.Query()):
-		h = handleAbortMultipartUpload(r.log)
-	// Forward all other requests.
-	default:
-		h = handleForwards(client, r.log)
+	client, err := s3.NewClient(r.region, r.log)
+	if err != nil {
+		r.log.WithError(err).Error("failed to create S3 client")
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
 	}
 
+	var key, bucket string
+	matchingPath := match(req.URL.Path, bucketAndKeyPattern, &bucket, &key)
+
+	// Validate bucket and key if we have a matching path
+	if matchingPath {
+		if err := config.ValidateBucketName(bucket); err != nil {
+			r.log.WithError(err).WithField("bucket", bucket).Warn("invalid bucket name")
+			http.Error(w, fmt.Sprintf("invalid bucket name: %s", err.Error()), http.StatusBadRequest)
+			return
+		}
+		if err := config.ValidateObjectKey(key); err != nil {
+			r.log.WithError(err).WithField("key", key).Warn("invalid object key")
+			http.Error(w, fmt.Sprintf("invalid object key: %s", err.Error()), http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Validate content length for PUT requests
+	if req.Method == http.MethodPut && req.ContentLength > 0 {
+		if err := config.ValidateContentLength(req.ContentLength); err != nil {
+			r.log.WithError(err).WithField("content_length", req.ContentLength).Warn("invalid content length")
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
+
+	h := r.getHandler(req, client, matchingPath, key, bucket)
 	h.ServeHTTP(w, req)
 }
 
@@ -262,7 +244,7 @@ func parseRetentionTime(raw string) (time.Time, error) {
 }
 
 // repackage implements all modifications we need to do to an incoming request that we want to forward to the s3 API.
-func repackage(r *http.Request) http.Request {
+func repackage(r *http.Request) (*http.Request, error) {
 	req := r.Clone(r.Context())
 	req.URL.RawPath = ""
 
@@ -270,7 +252,10 @@ func repackage(r *http.Request) http.Request {
 	// So, we unset it.
 	req.RequestURI = ""
 
-	host, _ := config.GetHostConfig()
+	host, err := config.GetHostConfig()
+	if err != nil {
+		return nil, fmt.Errorf("getting host config: %w", err)
+	}
 
 	req.Host = host
 	req.URL.Host = host
@@ -291,7 +276,7 @@ func repackage(r *http.Request) http.Request {
 		req.Header.Del(header)
 	}
 
-	return *req
+	return req, nil
 }
 
 // validateContentMD5 checks if the content-md5 header matches the body.
@@ -309,6 +294,7 @@ func validateContentMD5(contentMD5 string, body []byte) error {
 		return fmt.Errorf("content-md5 must be 16 bytes long, got %d bytes", len(expected))
 	}
 
+	// #nosec G401
 	actual := md5.Sum(body)
 
 	if !bytes.Equal(actual[:], expected) {
@@ -349,10 +335,85 @@ func allowMethod(h http.HandlerFunc, method string) http.HandlerFunc {
 
 // get takes a HandlerFunc and wraps it to only allow the GET method.
 func get(h http.HandlerFunc) http.HandlerFunc {
-	return allowMethod(h, "GET")
+	return allowMethod(h, http.MethodGet)
 }
 
 // put takes a HandlerFunc and wraps it to only allow the POST method.
 func put(h http.HandlerFunc) http.HandlerFunc {
-	return allowMethod(h, "PUT")
+	return allowMethod(h, http.MethodPut)
+}
+
+func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool, key, bucket string) http.Handler {
+	s3Client, ok := client.(*s3.Client)
+	if !ok {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		})
+	}
+
+	// Forward if path doesn't match
+	if !matchingPath {
+		return handleForwards(s3Client, r.log)
+	}
+
+	// Check multipart operations first (if not forwarding them)
+	if handler := r.getMultipartHandler(req); handler != nil {
+		return handler
+	}
+
+	// Handle regular object operations
+	switch req.Method {
+	case http.MethodGet:
+		if !isUnwantedGetEndpoint(req.URL.Query()) {
+			return handleGetObject(s3Client, key, bucket, r.log)
+		}
+	case http.MethodPut:
+		if !isUnwantedPutEndpoint(req.Header, req.URL.Query()) {
+			return handlePutObject(s3Client, key, bucket, r.log)
+		}
+	}
+
+	// Forward all other requests
+	return handleForwards(s3Client, r.log)
+}
+
+func (r Router) getMultipartHandler(req *http.Request) http.Handler {
+	if r.forwardMultipartReqs {
+		return nil
+	}
+
+	// Check all multipart operations regardless of HTTP method
+	// Let the is* functions determine if they match
+
+	if isUploadPart(req.Method, req.URL.Query()) {
+		return handleUploadPart(r.log)
+	}
+
+	if isCreateMultipartUpload(req.Method, req.URL.Query()) {
+		return handleCreateMultipartUpload(r.log)
+	}
+
+	if isCompleteMultipartUpload(req.Method, req.URL.Query()) {
+		return handleCompleteMultipartUpload(r.log)
+	}
+
+	if isAbortMultipartUpload(req.Method, req.URL.Query()) {
+		return handleAbortMultipartUpload(r.log)
+	}
+
+	return nil
+}
+
+func (r Router) handleHealthEndpoints(w http.ResponseWriter, req *http.Request) bool {
+	if req.Method == http.MethodGet && (req.URL.Path == "/healthz" || req.URL.Path == "/readyz") {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte("ok")); err != nil {
+			// Log the error but don't fail the health check
+			r.log.WithError(err).Error("failed to write health check response")
+			// Try to set status code in case write partially failed
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		return true
+	}
+	return false
 }
