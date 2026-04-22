@@ -94,11 +94,10 @@ func runServer(flags cmdFlags, log *logger.Logger) error {
 		throttler := router.NewThrottlingMiddleware(throttling, 10*time.Second)
 		// Explicitly convert h to http.Handler so it can be used with Throttle
 		hMdw = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			throttler.Throttle(h).ServeHTTP(w, r)
-		})
-	}
-
-	server := http.Server{
+                        if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+                                h.ServeHTTP(w, r)
+                                return
+                        }
 		Addr:    fmt.Sprintf("%s:%d", flags.ip, defaultPort),
 		Handler: hMdw,
 		// Disable HTTP/2. Serving HTTP/2 will cause some clients to use HTTP/2.
