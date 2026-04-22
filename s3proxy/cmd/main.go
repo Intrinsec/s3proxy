@@ -77,6 +77,10 @@ func main() {
 		log.Warn("configured to forward multipart uploads, this may leak data to AWS")
 	}
 
+	if cfg.Insecure() {
+		log.Warn("S3PROXY_INSECURE=1: upstream S3 traffic will use plaintext HTTP. Do NOT use in production; for local/test/demo purposes only")
+	}
+
 	ctx := context.Background()
 	shutdownTracing, err := tracing.Setup(ctx, serviceName, serviceVersion)
 	if err != nil {
