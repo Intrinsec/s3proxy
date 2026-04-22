@@ -22,6 +22,7 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/base64"
@@ -46,6 +47,7 @@ var (
 type Router struct {
 	region string
 	kek    [32]byte
+	client *s3.Client
 	// forwardMultipartReqs controls whether we forward the following requests: CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload.
 	// s3proxy does not implement those yet.
 	// Setting forwardMultipartReqs to true will forward those requests to the S3 API, otherwise we block them (secure defaults).
@@ -53,20 +55,32 @@ type Router struct {
 	log                  *logger.Logger
 }
 
-// Function to generate a 32-byte array (KEK) from a string input using SHA-256
+// generateKEKFromString derives a 32-byte KEK from a string input using SHA-256.
 func generateKEKFromString(input string) [32]byte {
-	hash := sha256.Sum256([]byte(input))
-	return hash
+	return sha256.Sum256([]byte(input))
 }
 
-// New creates a new Router.
-func New(region string, forwardMultipartReqs bool, log *logger.Logger) (Router, error) {
+// New creates a new Router. The S3 client is built once here and reused for every
+// incoming request — the AWS SDK client is safe for concurrent use and maintains
+// its own HTTP connection pool and credentials cache.
+func New(ctx context.Context, region string, forwardMultipartReqs bool, log *logger.Logger) (Router, error) {
 	result, err := config.GetEncryptKey()
 	if err != nil {
-		return Router{}, err
+		return Router{}, fmt.Errorf("getting encryption key: %w", err)
 	}
-	kekArray := generateKEKFromString(result)
-	return Router{region: region, kek: kekArray, forwardMultipartReqs: forwardMultipartReqs, log: log}, nil
+
+	client, err := s3.NewClient(ctx, region, log)
+	if err != nil {
+		return Router{}, fmt.Errorf("creating S3 client: %w", err)
+	}
+
+	return Router{
+		region:               region,
+		kek:                  generateKEKFromString(result),
+		client:               client,
+		forwardMultipartReqs: forwardMultipartReqs,
+		log:                  log,
+	}, nil
 }
 
 // Serve implements the routing logic for the s3 proxy.
@@ -76,13 +90,6 @@ func New(region string, forwardMultipartReqs bool, log *logger.Logger) (Router, 
 // Currently routing logic and request handling are integrated.
 func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 	if r.handleHealthEndpoints(w, req) {
-		return
-	}
-
-	client, err := s3.NewClient(r.region, r.log)
-	if err != nil {
-		r.log.WithError(err).Error("failed to create S3 client")
-		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
@@ -112,7 +119,7 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	h := r.getHandler(req, client, matchingPath, key, bucket)
+	h := r.getHandler(req, r.client, matchingPath, key, bucket)
 	h.ServeHTTP(w, req)
 }
 

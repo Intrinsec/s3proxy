@@ -27,11 +27,11 @@ import (
 	logger "github.com/sirupsen/logrus"
 )
 
-var (
-	// dekTag is the name of the header that holds the encrypted data encryption key for the attached object. Presence of the key implies the object needs to be decrypted.
-	// Use lowercase only, as AWS automatically lowercases all metadata keys.
-	dekTag = config.GetDekTagName()
-)
+// s3OperationTimeout bounds the total duration of an individual S3 GetObject/PutObject call.
+// We detach from the request context (context.WithoutCancel) so a client disconnect does not
+// abort a partially-uploaded PutObject, but we still cap overall work to protect against
+// hung upstreams producing zombie requests.
+const s3OperationTimeout = 2 * time.Minute
 
 // object bundles data to implement http.Handler methods that use data from incoming requests.
 type object struct {
@@ -60,7 +60,13 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 
 	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Debug("getObject")
 
-	output, err := o.client.GetObject(context.WithoutCancel(r.Context()), o.bucket, o.key, o.versionID, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
+	// Detach from the request cancellation to avoid aborting an S3 operation when
+	// the client disconnects mid-flight, but cap the total duration so a hung
+	// upstream cannot produce a zombie request.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s3OperationTimeout)
+	defer cancel()
+
+	output, err := o.client.GetObject(ctx, o.bucket, o.key, o.versionID, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
 
 	if err != nil {
 		// log with Info as it might be expected behavior (e.g. object not found).
@@ -90,7 +96,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	plaintext := body
-	rawEncryptedDEK, ok := output.Metadata[dekTag]
+	rawEncryptedDEK, ok := output.Metadata[config.GetDekTagName()]
 	if ok {
 		encryptedDEK, err := hex.DecodeString(rawEncryptedDEK)
 		if err != nil {
@@ -134,9 +140,12 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	o.metadata[dekTag] = hex.EncodeToString(encryptedDEK)
+	o.metadata[config.GetDekTagName()] = hex.EncodeToString(encryptedDEK)
 
-	output, err := o.client.PutObject(context.WithoutCancel(r.Context()), o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s3OperationTimeout)
+	defer cancel()
+
+	output, err := o.client.PutObject(ctx, o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
 	if err != nil {
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject sending request to S3")
 		code := parseErrorCode(err)

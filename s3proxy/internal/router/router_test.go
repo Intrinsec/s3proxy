@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	logger "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
@@ -157,7 +158,7 @@ func TestPutObjectUsesRouterKEK(t *testing.T) {
 	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	rawEncryptedDEK, ok := client.metadata[dekTag]
+	rawEncryptedDEK, ok := client.metadata[config.GetDekTagName()]
 	require.True(t, ok)
 	encryptedDEK, err := hex.DecodeString(rawEncryptedDEK)
 	require.NoError(t, err)
@@ -207,7 +208,7 @@ func newEncryptedGetObjectClient(t *testing.T, kek [32]byte, plaintext []byte) *
 			Body:          io.NopCloser(bytes.NewReader(ciphertext)),
 			ContentLength: awsInt64(int64(len(ciphertext))),
 			Metadata: map[string]string{
-				dekTag: hex.EncodeToString(encryptedDEK),
+				config.GetDekTagName(): hex.EncodeToString(encryptedDEK),
 			},
 		},
 	}

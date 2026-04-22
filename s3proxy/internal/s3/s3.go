@@ -14,8 +14,6 @@ package s3
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -128,13 +126,12 @@ func addCaptureRawResponseInitializeMiddleware() func(*middleware.Stack) error {
 	}
 }
 
-// NewClient creates a new AWS S3 client.
-func NewClient(region string, log *logger.Logger) (*Client, error) {
-	// Use context.Background here because this context will not influence the later operations of the client.
-	// The context given here is used for http requests that are made during client construction.
-	// Client construction happens once during proxy setup.
+// NewClient creates a new AWS S3 client. The provided context is used only for HTTP
+// requests made during client construction (credentials discovery, etc.); it does not
+// bound subsequent request lifetimes. Client construction happens once during proxy setup.
+func NewClient(ctx context.Context, region string, log *logger.Logger) (*Client, error) {
 	clientCfg, err := config.LoadDefaultConfig(
-		context.Background(),
+		ctx,
 		config.WithRegion(region),
 	)
 	if err != nil {
@@ -199,17 +196,17 @@ func (c Client) PutObject(ctx context.Context, bucket, key, tags, contentType, o
 		contentType = "binary/octet-stream"
 	}
 
-	// #nosec G401
-	contentMD5 := md5.Sum(body)
-	encodedContentMD5 := base64.StdEncoding.EncodeToString(contentMD5[:])
-
+	// Rely on the AWS SDK's built-in checksum calculation (RequestChecksumCalculation is
+	// configured in NewClient). Setting ContentMD5 explicitly is redundant: the SDK already
+	// signs a CRC32/SHA256 checksum when the S3 operation requires integrity, and S3 will
+	// reject the request on mismatch. Computing MD5 here additionally forced a full extra
+	// hash pass over the (already large) ciphertext buffer.
 	putObjectInput := &s3.PutObjectInput{
 		Bucket:                    &bucket,
 		Key:                       &key,
 		Body:                      bytes.NewReader(body),
 		Tagging:                   &tags,
 		Metadata:                  metadata,
-		ContentMD5:                &encodedContentMD5,
 		ContentType:               &contentType,
 		ObjectLockLegalHoldStatus: types.ObjectLockLegalHoldStatus(objectLockLegalHoldStatus),
 	}

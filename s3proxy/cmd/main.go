@@ -11,6 +11,7 @@ Package main parses command line flags and starts the s3proxy server.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -79,7 +80,7 @@ func setLogLevel(log *logger.Logger, level int) {
 func runServer(flags cmdFlags, log *logger.Logger) error {
 	log.WithField("ip", flags.ip).WithField("port", defaultPort).WithField("region", flags.region).Info("listening")
 
-	routerInstance, err := router.New(flags.region, flags.forwardMultipartReqs, log)
+	routerInstance, err := router.New(context.Background(), flags.region, flags.forwardMultipartReqs, log)
 	if err != nil {
 		return fmt.Errorf("creating router: %w", err)
 	}
