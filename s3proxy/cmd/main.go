@@ -47,19 +47,26 @@ func main() {
 
 	setLogLevel(log, flags.logLevel)
 
-	if err := config.LoadConfig(); err != nil {
+	cfg, err := config.Load()
+	if err != nil {
 		log.WithError(err).Fatal("loading configuration")
 	}
 
-	if err := config.ValidateConfiguration(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		log.WithError(err).Fatal("configuration validation failed")
+	}
+
+	// Keep the default global Config populated for legacy call sites during the
+	// transition to DI-based access.
+	if err := config.LoadConfig(); err != nil {
+		log.WithError(err).Fatal("populating default config")
 	}
 
 	if flags.forwardMultipartReqs {
 		log.Warn("configured to forward multipart uploads, this may leak data to AWS")
 	}
 
-	if err := runServer(flags, log); err != nil {
+	if err := runServer(flags, cfg, log); err != nil {
 		log.WithError(err).Fatal("running server")
 	}
 }
@@ -77,7 +84,7 @@ func setLogLevel(log *logger.Logger, level int) {
 	}
 }
 
-func runServer(flags cmdFlags, log *logger.Logger) error {
+func runServer(flags cmdFlags, cfg *config.Config, log *logger.Logger) error {
 	log.WithField("ip", flags.ip).WithField("port", defaultPort).WithField("region", flags.region).Info("listening")
 
 	routerInstance, err := router.New(context.Background(), flags.region, flags.forwardMultipartReqs, log)
@@ -88,7 +95,7 @@ func runServer(flags cmdFlags, log *logger.Logger) error {
 	h := http.HandlerFunc(routerInstance.Serve)
 	hMdw := h
 
-	throttling := config.GetThrottlingRequestsMax()
+	throttling := cfg.ThrottlingRequestsMax()
 	if throttling != 0 {
 		log.WithField("throttling_requestsmax", throttling).Info("Throttling is enable")
 		throttler := router.NewThrottlingMiddleware(throttling, 10*time.Second)

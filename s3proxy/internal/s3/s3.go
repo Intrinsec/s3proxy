@@ -155,8 +155,19 @@ func NewClient(ctx context.Context, region string, log *logger.Logger) (*Client,
 	return &Client{s3client: client, s3config: &clientCfg}, nil
 }
 
+// GetConfig returns the underlying AWS SDK configuration used by the client.
 func (c Client) GetConfig() *aws.Config {
 	return c.s3config
+}
+
+// Ping issues a lightweight ListBuckets call against the upstream S3 endpoint and
+// returns nil when the call completes without error. Intended as a readiness probe:
+// it exercises both connectivity and credentials without requiring a specific bucket.
+func (c Client) Ping(ctx context.Context) error {
+	if _, err := c.s3client.ListBuckets(ctx, &s3.ListBucketsInput{}); err != nil {
+		return fmt.Errorf("s3 ListBuckets: %w", err)
+	}
+	return nil
 }
 
 // GetObject returns the object with the given key from the given bucket.

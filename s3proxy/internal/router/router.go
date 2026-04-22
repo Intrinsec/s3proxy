@@ -416,15 +416,51 @@ func (r Router) getMultipartHandler(req *http.Request) http.Handler {
 	return nil
 }
 
+// readinessProbeTimeout bounds how long /readyz waits for the upstream check.
+const readinessProbeTimeout = 2 * time.Second
+
 func (r Router) handleHealthEndpoints(w http.ResponseWriter, req *http.Request) bool {
-	if req.Method != http.MethodGet || (req.URL.Path != "/healthz" && req.URL.Path != "/readyz") {
+	if req.Method != http.MethodGet {
 		return false
 	}
 
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write([]byte("ok")); err != nil {
-		// Status already written; log and move on.
-		r.log.WithError(err).Error("failed to write health check response")
+	switch req.URL.Path {
+	case "/healthz":
+		writeHealthResponse(w, http.StatusOK, "ok", r.log)
+		return true
+	case "/readyz":
+		r.serveReadyz(w, req)
+		return true
+	default:
+		return false
 	}
-	return true
+}
+
+// serveReadyz checks that the process is ready to serve S3 traffic by issuing a
+// short-lived ListBuckets probe against the upstream. Returns 200 on success and
+// 503 (with a text reason) otherwise. /healthz stays trivially 200 — it only
+// attests that the process is alive.
+func (r Router) serveReadyz(w http.ResponseWriter, req *http.Request) {
+	if r.client == nil {
+		writeHealthResponse(w, http.StatusServiceUnavailable, "no upstream client", r.log)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(req.Context(), readinessProbeTimeout)
+	defer cancel()
+
+	if err := r.client.Ping(ctx); err != nil {
+		r.log.WithError(err).Warn("readiness probe failed")
+		writeHealthResponse(w, http.StatusServiceUnavailable, "upstream unreachable", r.log)
+		return
+	}
+
+	writeHealthResponse(w, http.StatusOK, "ok", r.log)
+}
+
+func writeHealthResponse(w http.ResponseWriter, status int, body string, log *logger.Logger) {
+	w.WriteHeader(status)
+	if _, err := w.Write([]byte(body)); err != nil {
+		log.WithError(err).Error("failed to write health check response")
+	}
 }
