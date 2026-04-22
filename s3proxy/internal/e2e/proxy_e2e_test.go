@@ -20,6 +20,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"net/http"
@@ -122,7 +123,8 @@ func TestProxyRoundtripAgainstMinio(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// The object stored in MinIO must be opaque ciphertext, not the plaintext we uploaded.
+	// Fetch the object directly from MinIO (bypassing the proxy) and prove that
+	// what lands at rest is opaque ciphertext, not the plaintext we uploaded.
 	stored, err := directClient.GetObject(ctx, &awss3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -131,8 +133,21 @@ func TestProxyRoundtripAgainstMinio(t *testing.T) {
 	storedBody, err := io.ReadAll(stored.Body)
 	require.NoError(t, err)
 	require.NoError(t, stored.Body.Close())
+
+	dekTag := stored.Metadata[config.GetDekTagName()]
+	kekVerTag := stored.Metadata[config.GetKEKVersionTagName()]
+
+	t.Logf("plaintext  (%d bytes): %q", len(plaintext), plaintext)
+	t.Logf("ciphertext (%d bytes, MinIO direct read): %s", len(storedBody), hex.EncodeToString(storedBody))
+	t.Logf("DEK metadata tag %q = %s (encrypted with KEK)", config.GetDekTagName(), dekTag)
+	t.Logf("KEK version tag %q = %s", config.GetKEKVersionTagName(), kekVerTag)
+
 	assert.NotEqual(t, plaintext, storedBody, "stored bytes must differ from plaintext")
-	assert.NotEmpty(t, stored.Metadata[config.GetDekTagName()], "DEK metadata must be attached")
+	assert.False(t, bytes.Contains(storedBody, plaintext), "plaintext must not appear verbatim in stored bytes")
+	// AES-GCM adds a 12-byte nonce + 16-byte tag (see cryptoutil), so ciphertext is strictly longer than plaintext.
+	assert.Greater(t, len(storedBody), len(plaintext), "ciphertext must be longer than plaintext (nonce + auth tag)")
+	assert.NotEmpty(t, dekTag, "DEK metadata must be attached")
+	assert.NotEmpty(t, kekVerTag, "KEK version metadata must be attached")
 
 	// Round-tripping through the proxy must return the original plaintext.
 	got, err := proxyClient.GetObject(ctx, &awss3.GetObjectInput{
