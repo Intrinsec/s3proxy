@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/intrinsec/s3proxy/internal/config"
+	"github.com/intrinsec/s3proxy/internal/monitoring"
 	"github.com/intrinsec/s3proxy/internal/router"
 )
 
@@ -102,27 +103,36 @@ func setLogLevel(level int) {
 func runServer(flags cmdFlags, cfg *config.Config, log *slog.Logger) error {
 	log.Info("listening", "ip", flags.ip, "port", defaultPort, "region", flags.region)
 
-	routerInstance, err := router.New(context.Background(), flags.region, flags.forwardMultipartReqs, log)
+	metrics := monitoring.New()
+
+	routerInstance, err := router.New(context.Background(), flags.region, flags.forwardMultipartReqs, log, metrics)
 	if err != nil {
 		return fmt.Errorf("creating router: %w", err)
 	}
 
-	h := http.HandlerFunc(routerInstance.Serve)
-	hMdw := h
+	mux := http.NewServeMux()
+	mux.Handle(monitoring.MetricsPath, metrics.Handler())
+	mux.HandleFunc("/", routerInstance.Serve)
+
+	var inner http.Handler = mux
 
 	throttling := cfg.ThrottlingRequestsMax()
 	if throttling != 0 {
 		log.Info("Throttling is enable", "throttling_requestsmax", throttling)
-		throttler := router.NewThrottlingMiddleware(throttling, 10*time.Second)
-		// Explicitly convert h to http.Handler so it can be used with Throttle
-		hMdw = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if isHealthCheckRequest(r) {
-				h.ServeHTTP(w, r)
+		throttler := router.NewThrottlingMiddleware(throttling, 10*time.Second, metrics)
+		base := inner
+		// Health checks and /metrics bypass throttling so that liveness/readiness and
+		// monitoring stay observable under overload.
+		inner = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isHealthCheckRequest(r) || r.URL.Path == monitoring.MetricsPath {
+				base.ServeHTTP(w, r)
 				return
 			}
-			throttler.Throttle(h).ServeHTTP(w, r)
+			throttler.Throttle(base).ServeHTTP(w, r)
 		})
 	}
+
+	hMdw := metrics.Instrument(inner)
 
 	server := http.Server{
 		Addr:              fmt.Sprintf("%s:%d", flags.ip, defaultPort),

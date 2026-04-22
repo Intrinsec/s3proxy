@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/cryptoutil"
+	"github.com/intrinsec/s3proxy/internal/monitoring"
 	s3internal "github.com/intrinsec/s3proxy/internal/s3"
 )
 
@@ -52,6 +53,7 @@ type object struct {
 	sseCustomerKeyMD5         string
 	versionID                 string
 	log                       *slog.Logger
+	metrics                   *monitoring.Metrics
 }
 
 // get is a http.HandlerFunc that implements the GET method for objects.
@@ -73,6 +75,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		// log with Info as it might be expected behavior (e.g. object not found).
 		log.Error("GetObject sending request to S3", "error", err)
 
+		o.incUpstreamError()
 		handleGetObjectError(w, err, requestID, o.log)
 		return
 	}
@@ -116,7 +119,9 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		decryptStart := time.Now()
 		plaintext, err = cryptoutil.Decrypt(body, encryptedDEK, kek)
+		o.observeDecrypt(time.Since(decryptStart))
 		if err != nil {
 			log.Error("GetObject decrypting response", "error", err)
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
@@ -147,7 +152,9 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	log.Debug("putObject", "key", o.key, "bucket", o.bucket)
 
 	kekVersion, kek := o.keks.Current()
+	encryptStart := time.Now()
 	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(o.data, kek)
+	o.observeEncrypt(time.Since(encryptStart))
 	if err != nil {
 		log.Error("PutObject", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -162,6 +169,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	output, err := o.client.PutObject(ctx, o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
 	if err != nil {
 		log.Error("PutObject sending request to S3", "error", err)
+		o.incUpstreamError()
 		code := parseErrorCode(err)
 		if code != 0 {
 			http.Error(w, err.Error(), code)
@@ -279,6 +287,27 @@ func parseErrorCode(err error) int {
 		return httpResponseErr.HTTPStatusCode()
 	}
 	return 0
+}
+
+func (o object) observeEncrypt(d time.Duration) {
+	if o.metrics == nil {
+		return
+	}
+	o.metrics.EncryptDuration.Observe(d.Seconds())
+}
+
+func (o object) observeDecrypt(d time.Duration) {
+	if o.metrics == nil {
+		return
+	}
+	o.metrics.DecryptDuration.Observe(d.Seconds())
+}
+
+func (o object) incUpstreamError() {
+	if o.metrics == nil {
+		return
+	}
+	o.metrics.UpstreamErrors.Inc()
 }
 
 type s3Client interface {

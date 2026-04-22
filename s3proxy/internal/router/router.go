@@ -37,6 +37,7 @@ import (
 
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/cryptoutil"
+	"github.com/intrinsec/s3proxy/internal/monitoring"
 	"github.com/intrinsec/s3proxy/internal/s3"
 )
 
@@ -56,12 +57,13 @@ type Router struct {
 	// Setting forwardMultipartReqs to true will forward those requests to the S3 API, otherwise we block them (secure defaults).
 	forwardMultipartReqs bool
 	log                  *slog.Logger
+	metrics              *monitoring.Metrics
 }
 
 // New creates a new Router. The S3 client is built once here and reused for every
 // incoming request — the AWS SDK client is safe for concurrent use and maintains
 // its own HTTP connection pool and credentials cache.
-func New(ctx context.Context, region string, forwardMultipartReqs bool, log *slog.Logger) (Router, error) {
+func New(ctx context.Context, region string, forwardMultipartReqs bool, log *slog.Logger, metrics *monitoring.Metrics) (Router, error) {
 	seed, err := config.GetEncryptKey()
 	if err != nil {
 		return Router{}, fmt.Errorf("getting encryption key: %w", err)
@@ -83,6 +85,7 @@ func New(ctx context.Context, region string, forwardMultipartReqs bool, log *slo
 		client:               client,
 		forwardMultipartReqs: forwardMultipartReqs,
 		log:                  log,
+		metrics:              metrics,
 	}, nil
 }
 
@@ -103,11 +106,13 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 	if matchingPath {
 		if err := config.ValidateBucketName(bucket); err != nil {
 			r.log.Warn("invalid bucket name", "error", err, "bucket", bucket)
+			r.incError("invalid_bucket")
 			http.Error(w, fmt.Sprintf("invalid bucket name: %s", err.Error()), http.StatusBadRequest)
 			return
 		}
 		if err := config.ValidateObjectKey(key); err != nil {
 			r.log.Warn("invalid object key", "error", err, "key", key)
+			r.incError("invalid_key")
 			http.Error(w, fmt.Sprintf("invalid object key: %s", err.Error()), http.StatusBadRequest)
 			return
 		}
@@ -118,11 +123,13 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 	if req.Method == http.MethodPut && req.ContentLength > 0 {
 		if err := config.ValidateContentLength(req.ContentLength); err != nil {
 			r.log.Warn("invalid content length", "error", err, "content_length", req.ContentLength)
+			r.incError("invalid_content_length")
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
 		if err := config.ValidatePutBodySize(req.ContentLength); err != nil {
 			r.log.Warn("put body too large", "error", err, "content_length", req.ContentLength)
+			r.incError("put_body_too_large")
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -356,7 +363,7 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 	forwardHandler := func() http.Handler {
 		s3Client, ok := client.(*s3.Client)
 		if ok {
-			return handleForwards(s3Client, r.log)
+			return handleForwards(s3Client, r.log, r.metrics)
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -377,11 +384,11 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 	switch req.Method {
 	case http.MethodGet:
 		if !isUnwantedGetEndpoint(req.URL.Query()) {
-			return handleGetObject(client, key, bucket, r.keks, r.log)
+			return handleGetObject(client, key, bucket, r.keks, r.log, r.metrics)
 		}
 	case http.MethodPut:
 		if !isUnwantedPutEndpoint(req.Header, req.URL.Query()) {
-			return handlePutObject(client, key, bucket, r.keks, r.log)
+			return handlePutObject(client, key, bucket, r.keks, r.log, r.metrics)
 		}
 	}
 
@@ -463,4 +470,12 @@ func writeHealthResponse(w http.ResponseWriter, status int, body string, log *sl
 	if _, err := w.Write([]byte(body)); err != nil {
 		log.Error("failed to write health check response", "error", err)
 	}
+}
+
+// incError is a nil-safe helper to bump ErrorsTotal{type=class}.
+func (r Router) incError(class string) {
+	if r.metrics == nil {
+		return
+	}
+	r.metrics.ErrorsTotal.WithLabelValues(class).Inc()
 }

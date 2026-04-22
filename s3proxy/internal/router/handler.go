@@ -20,10 +20,11 @@ import (
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/cryptoutil"
+	"github.com/intrinsec/s3proxy/internal/monitoring"
 	"github.com/intrinsec/s3proxy/internal/s3"
 )
 
-func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *slog.Logger) http.HandlerFunc {
+func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *slog.Logger, metrics *monitoring.Metrics) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.Debug("intercepting", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 		if req.Header.Get("Range") != "" {
@@ -48,12 +49,13 @@ func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil
 			sseCustomerKey:       req.Header.Get("x-amz-server-side-encryption-customer-key"),
 			sseCustomerKeyMD5:    req.Header.Get("x-amz-server-side-encryption-customer-key-MD5"),
 			log:                  log,
+			metrics:              metrics,
 		}
 		requireGET(obj.get)(w, req)
 	}
 }
 
-func handlePutObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *slog.Logger) http.HandlerFunc {
+func handlePutObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *slog.Logger, metrics *monitoring.Metrics) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.Debug("intercepting", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 
@@ -127,13 +129,14 @@ func handlePutObject(client s3Client, key string, bucket string, keks cryptoutil
 			sseCustomerKey:            req.Header.Get("x-amz-server-side-encryption-customer-key"),
 			sseCustomerKeyMD5:         req.Header.Get("x-amz-server-side-encryption-customer-key-MD5"),
 			log:                       log,
+			metrics:                   metrics,
 		}
 
 		requirePUT(obj.put)(w, req)
 	}
 }
 
-func handleForwards(client *s3.Client, log *slog.Logger) http.HandlerFunc {
+func handleForwards(client *s3.Client, log *slog.Logger, metrics *monitoring.Metrics) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.Debug("forwarding", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 
@@ -165,6 +168,9 @@ func handleForwards(client *s3.Client, log *slog.Logger) http.HandlerFunc {
 		resp, err := forwardHTTPClient.Do(newReq)
 		if err != nil {
 			log.Error("do request", "error", err)
+			if metrics != nil {
+				metrics.UpstreamErrors.Inc()
+			}
 			http.Error(w, "do request: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
