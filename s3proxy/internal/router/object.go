@@ -102,7 +102,6 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		}
 
 		plaintext, err = crypto.Decrypt(body, encryptedDEK, o.kek)
-		body = nil
 		if err != nil {
 			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decrypting response")
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
@@ -137,7 +136,6 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	o.data = nil
 	o.metadata[dekTag] = hex.EncodeToString(encryptedDEK)
 
 	output, err := o.client.PutObject(context.WithoutCancel(r.Context()), o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)

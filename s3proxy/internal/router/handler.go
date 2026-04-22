@@ -16,33 +16,16 @@ import (
 	"time"
 
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/s3"
 	logger "github.com/sirupsen/logrus"
 )
 
-// getKEK retrieves the key encryption key
-func getKEK() ([32]byte, error) {
-	encryptKey, err := config.GetEncryptKey()
-	if err != nil {
-		return [32]byte{}, fmt.Errorf("getting encryption key: %w", err)
-	}
-	return generateKEKFromString(encryptKey), nil
-}
-
-func handleGetObject(client *s3.Client, key string, bucket string, log *logger.Logger) http.HandlerFunc {
+func handleGetObject(client s3Client, key string, bucket string, kek [32]byte, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
 		if req.Header.Get("Range") != "" {
 			log.Error("GetObject Range header unsupported")
 			http.Error(w, "s3proxy currently does not support Range headers", http.StatusNotImplemented)
-			return
-		}
-
-		kek, err := getKEK()
-		if err != nil {
-			log.WithError(err).Error("failed to get KEK")
-			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
@@ -67,16 +50,9 @@ func handleGetObject(client *s3.Client, key string, bucket string, log *logger.L
 	}
 }
 
-func handlePutObject(client *s3.Client, key string, bucket string, log *logger.Logger) http.HandlerFunc {
+func handlePutObject(client s3Client, key string, bucket string, kek [32]byte, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
-
-		kek, err := getKEK()
-		if err != nil {
-			log.WithError(err).Error("failed to get KEK")
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
 
 		body, err := readBody(req.Body, req.ContentLength)
 		if err != nil {

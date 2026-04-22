@@ -344,8 +344,11 @@ func put(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool, key, bucket string) http.Handler {
-	s3Client, ok := client.(*s3.Client)
-	if !ok {
+	forwardHandler := func() http.Handler {
+		s3Client, ok := client.(*s3.Client)
+		if ok {
+			return handleForwards(s3Client, r.log)
+		}
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 		})
@@ -353,7 +356,7 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 
 	// Forward if path doesn't match
 	if !matchingPath {
-		return handleForwards(s3Client, r.log)
+		return forwardHandler()
 	}
 
 	// Check multipart operations first (if not forwarding them)
@@ -365,16 +368,16 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 	switch req.Method {
 	case http.MethodGet:
 		if !isUnwantedGetEndpoint(req.URL.Query()) {
-			return handleGetObject(s3Client, key, bucket, r.log)
+			return handleGetObject(client, key, bucket, r.kek, r.log)
 		}
 	case http.MethodPut:
 		if !isUnwantedPutEndpoint(req.Header, req.URL.Query()) {
-			return handlePutObject(s3Client, key, bucket, r.log)
+			return handlePutObject(client, key, bucket, r.kek, r.log)
 		}
 	}
 
 	// Forward all other requests
-	return handleForwards(s3Client, r.log)
+	return forwardHandler()
 }
 
 func (r Router) getMultipartHandler(req *http.Request) http.Handler {
