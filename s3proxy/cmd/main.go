@@ -24,6 +24,8 @@ import (
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/monitoring"
 	"github.com/intrinsec/s3proxy/internal/router"
+	"github.com/intrinsec/s3proxy/internal/tracing"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -37,6 +39,10 @@ const (
 	defaultCertLocation = "/etc/s3proxy/certs"
 	// defaultLogLevel is the default log level.
 	defaultLogLevel = 0
+	// serviceName identifies the proxy in traces and logs.
+	serviceName = "s3proxy"
+	// serviceVersion is the build version exposed on OTel traces.
+	serviceVersion = "dev"
 )
 
 // logLevelVar controls the minimum log level at runtime.
@@ -71,15 +77,29 @@ func main() {
 		log.Warn("configured to forward multipart uploads, this may leak data to AWS")
 	}
 
+	ctx := context.Background()
+	shutdownTracing, err := tracing.Setup(ctx, serviceName, serviceVersion)
+	if err != nil {
+		fatal(log, "setting up tracing", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Error("shutting down tracing", "error", err)
+		}
+	}()
+
 	if err := runServer(flags, cfg, log); err != nil {
 		fatal(log, "running server", err)
 	}
 }
 
 // newLogger builds a JSON slog.Logger writing to stdout with a common service attribute.
+// The handler is wrapped so active trace/span IDs from the request context are emitted alongside log records.
 func newLogger() *slog.Logger {
-	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevelVar})
-	return slog.New(handler).With("service", "s3proxy")
+	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevelVar})
+	return slog.New(tracing.NewSpanContextHandler(base)).With("service", serviceName)
 }
 
 func fatal(log *slog.Logger, msg string, err error) {
@@ -132,7 +152,11 @@ func runServer(flags cmdFlags, cfg *config.Config, log *slog.Logger) error {
 		})
 	}
 
-	hMdw := metrics.Instrument(inner)
+	hMdw := otelhttp.NewHandler(metrics.Instrument(inner), "s3proxy.http.serve",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + monitoring.RouteLabel(r.URL.Path)
+		}),
+	)
 
 	server := http.Server{
 		Addr:              fmt.Sprintf("%s:%d", flags.ip, defaultPort),

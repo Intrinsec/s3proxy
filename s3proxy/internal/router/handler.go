@@ -22,6 +22,7 @@ import (
 	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	"github.com/intrinsec/s3proxy/internal/monitoring"
 	"github.com/intrinsec/s3proxy/internal/s3"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *slog.Logger, metrics *monitoring.Metrics) http.HandlerFunc {
@@ -194,14 +195,15 @@ func handleForwards(client *s3.Client, log *slog.Logger, metrics *monitoring.Met
 }
 
 // forwardHTTPClient is the HTTP client used to send signed requests to the upstream S3 API.
-// Separate from http.DefaultClient so we can tune timeouts and transport independently.
+// The transport is wrapped in otelhttp so outgoing requests propagate the W3C TraceContext
+// and record a client span under the inbound request's span.
 var forwardHTTPClient = &http.Client{
 	Timeout: 5 * time.Minute,
-	Transport: &http.Transport{
+	Transport: otelhttp.NewTransport(&http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
-	},
+	}),
 }
 
 // handleCreateMultipartUpload logs the request and blocks with an error message.
