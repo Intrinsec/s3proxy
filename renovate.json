@@ -1,0 +1,60 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    ":dependencyDashboard",
+    ":semanticCommits",
+    "group:allNonMajor",
+    "schedule:weekly"
+  ],
+  "timezone": "Europe/Paris",
+  "labels": ["dependencies"],
+  "rebaseWhen": "conflicted",
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "dependencies"],
+    "automerge": true,
+    "automergeType": "pr",
+    "automergeStrategy": "squash"
+  },
+  "packageRules": [
+    {
+      "description": "Group Go standard library patch updates and auto-merge",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "go patch updates",
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash"
+    },
+    {
+      "description": "Group AWS SDK updates together",
+      "matchManagers": ["gomod"],
+      "matchPackagePatterns": ["^github\\.com/aws/aws-sdk-go-v2"],
+      "groupName": "aws-sdk-go-v2"
+    },
+    {
+      "description": "Hold major Go module upgrades for human review",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major-upgrade"],
+      "automerge": false
+    },
+    {
+      "description": "Group GitHub Actions updates and auto-merge non-major",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "github actions",
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash"
+    },
+    {
+      "description": "Group Dockerfile / container image updates",
+      "matchManagers": ["dockerfile"],
+      "groupName": "container images"
+    }
+  ]
+}
