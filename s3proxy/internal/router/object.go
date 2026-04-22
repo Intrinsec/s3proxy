@@ -35,7 +35,7 @@ const s3OperationTimeout = 2 * time.Minute
 
 // object bundles data to implement http.Handler methods that use data from incoming requests.
 type object struct {
-	kek                       [32]byte
+	keks                      cryptoutil.KEKProvider
 	client                    s3Client
 	key                       string
 	bucket                    string
@@ -88,7 +88,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	if output.ContentLength != nil {
 		contentLength = *output.ContentLength
 	}
-	body, err := readBody(output.Body, contentLength)
+	body, err := readBody(output.Body, contentLength, config.MaxObjectSize)
 	if err != nil {
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject reading S3 response")
 		http.Error(w, fmt.Sprintf("failed to read response: %v", err), http.StatusInternalServerError)
@@ -105,7 +105,17 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		plaintext, err = cryptoutil.Decrypt(body, encryptedDEK, o.kek)
+		// Pick the KEK matching the derivation version recorded on the object. Missing
+		// tag means the object predates versioning and used the legacy SHA-256 KEK.
+		kekVersion := output.Metadata[config.GetKEKVersionTagName()]
+		kek, kekOK := o.keks.For(kekVersion)
+		if !kekOK {
+			o.log.WithField("requestID", requestID).WithField("kek_version", kekVersion).Error("GetObject unknown KEK version")
+			http.Error(w, "unknown KEK version on stored object", http.StatusInternalServerError)
+			return
+		}
+
+		plaintext, err = cryptoutil.Decrypt(body, encryptedDEK, kek)
 		if err != nil {
 			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decrypting response")
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
@@ -134,13 +144,15 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.New().String()
 	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Debug("putObject")
 
-	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(o.data, o.kek)
+	kekVersion, kek := o.keks.Current()
+	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(o.data, kek)
 	if err != nil {
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	o.metadata[config.GetDekTagName()] = hex.EncodeToString(encryptedDEK)
+	o.metadata[config.GetKEKVersionTagName()] = kekVersion
 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s3OperationTimeout)
 	defer cancel()

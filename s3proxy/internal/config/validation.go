@@ -78,10 +78,31 @@ func ValidateObjectKey(key string) error {
 	return nil
 }
 
-// MaxObjectSize defines the maximum allowed object size (5GB for S3)
+// MaxObjectSize is the S3 hard cap on a single PutObject (5 GiB).
 const MaxObjectSize = 5 * 1024 * 1024 * 1024
 
-// ValidateContentLength validates the content length of a request
+// DefaultMaxPutBodySize is the default per-request PutObject body size ceiling enforced
+// by s3proxy. Because PutObject currently buffers the full body in memory to encrypt it,
+// this cap bounds memory pressure: N concurrent uploads allocate at most N * cap bytes.
+// Operators can raise this via S3PROXY_PUTBODY_MAX (bytes) up to MaxObjectSize once a
+// streaming encryption path is introduced.
+const DefaultMaxPutBodySize = 256 * 1024 * 1024
+
+// GetMaxPutBodySize returns the configured PutObject body cap in bytes. Falls back to
+// DefaultMaxPutBodySize when S3PROXY_PUTBODY_MAX is unset, zero, or out of range.
+func GetMaxPutBodySize() int64 {
+	const key = "s3proxy.putbody.max"
+	if !k.Exists(key) {
+		return DefaultMaxPutBodySize
+	}
+	v := k.Int64(key)
+	if v <= 0 || v > MaxObjectSize {
+		return DefaultMaxPutBodySize
+	}
+	return v
+}
+
+// ValidateContentLength validates the content length of a request against the S3 hard cap.
 func ValidateContentLength(contentLength int64) error {
 	if contentLength < 0 {
 		return fmt.Errorf("invalid content length: %d", contentLength)
@@ -91,5 +112,17 @@ func ValidateContentLength(contentLength int64) error {
 		return fmt.Errorf("content length %d exceeds maximum object size of %d bytes", contentLength, MaxObjectSize)
 	}
 
+	return nil
+}
+
+// ValidatePutBodySize validates the content length of a PutObject request against the
+// in-memory cap enforced by s3proxy (see GetMaxPutBodySize). A content length of 0 or
+// below is accepted here — the caller must still protect io.ReadAll against a body that
+// has no declared length.
+func ValidatePutBodySize(contentLength int64) error {
+	maxBytes := GetMaxPutBodySize()
+	if contentLength > maxBytes {
+		return fmt.Errorf("content length %d exceeds PutObject body cap of %d bytes", contentLength, maxBytes)
+	}
 	return nil
 }

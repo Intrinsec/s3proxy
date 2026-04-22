@@ -33,6 +33,18 @@ func GetDekTagName() string {
 	return k.String("s3proxy.dektag.name")
 }
 
+// GetKEKVersionTagName returns the S3 object-metadata key used to record which KEK
+// derivation version was used to wrap the DEK. The tag is written on every new
+// encryption; when absent on read, the legacy SHA-256 derivation is assumed.
+// Defaults to "<dekTag>-kek-ver".
+func GetKEKVersionTagName() string {
+	const key = "s3proxy.dektag.kekver"
+	if k.Exists(key) {
+		return k.String(key)
+	}
+	return GetDekTagName() + "-kek-ver"
+}
+
 func GetEncryptKey() (string, error) {
 	// Ensure loading was successful before calling Get
 	if !k.Exists("s3proxy.encrypt.key") {

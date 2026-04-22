@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/intrinsec/s3proxy/internal/config"
+	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	"github.com/intrinsec/s3proxy/internal/s3"
 	logger "github.com/sirupsen/logrus"
 )
@@ -46,7 +47,9 @@ var (
 // Router implements the interception logic for the s3proxy.
 type Router struct {
 	region string
-	kek    [32]byte
+	// keks holds all supported KEK derivations so that objects written under an older
+	// scheme remain readable while new writes use the current scheme.
+	keks   cryptoutil.KEKProvider
 	client *s3.Client
 	// forwardMultipartReqs controls whether we forward the following requests: CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload.
 	// s3proxy does not implement those yet.
@@ -55,18 +58,18 @@ type Router struct {
 	log                  *logger.Logger
 }
 
-// generateKEKFromString derives a 32-byte KEK from a string input using SHA-256.
-func generateKEKFromString(input string) [32]byte {
-	return sha256.Sum256([]byte(input))
-}
-
 // New creates a new Router. The S3 client is built once here and reused for every
 // incoming request — the AWS SDK client is safe for concurrent use and maintains
 // its own HTTP connection pool and credentials cache.
 func New(ctx context.Context, region string, forwardMultipartReqs bool, log *logger.Logger) (Router, error) {
-	result, err := config.GetEncryptKey()
+	seed, err := config.GetEncryptKey()
 	if err != nil {
 		return Router{}, fmt.Errorf("getting encryption key: %w", err)
+	}
+
+	keks, err := cryptoutil.NewKEKProvider(seed)
+	if err != nil {
+		return Router{}, fmt.Errorf("deriving KEKs: %w", err)
 	}
 
 	client, err := s3.NewClient(ctx, region, log)
@@ -76,7 +79,7 @@ func New(ctx context.Context, region string, forwardMultipartReqs bool, log *log
 
 	return Router{
 		region:               region,
-		kek:                  generateKEKFromString(result),
+		keks:                 keks,
 		client:               client,
 		forwardMultipartReqs: forwardMultipartReqs,
 		log:                  log,
@@ -110,10 +113,16 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	// Validate content length for PUT requests
+	// Validate content length for PUT requests: both the absolute S3 ceiling and the
+	// in-memory PutObject body cap enforced by s3proxy.
 	if req.Method == http.MethodPut && req.ContentLength > 0 {
 		if err := config.ValidateContentLength(req.ContentLength); err != nil {
 			r.log.WithError(err).WithField("content_length", req.ContentLength).Warn("invalid content length")
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
+		if err := config.ValidatePutBodySize(req.ContentLength); err != nil {
+			r.log.WithError(err).WithField("content_length", req.ContentLength).Warn("put body too large")
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -368,11 +377,11 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 	switch req.Method {
 	case http.MethodGet:
 		if !isUnwantedGetEndpoint(req.URL.Query()) {
-			return handleGetObject(client, key, bucket, r.kek, r.log)
+			return handleGetObject(client, key, bucket, r.keks, r.log)
 		}
 	case http.MethodPut:
 		if !isUnwantedPutEndpoint(req.Header, req.URL.Query()) {
-			return handlePutObject(client, key, bucket, r.kek, r.log)
+			return handlePutObject(client, key, bucket, r.keks, r.log)
 		}
 	}
 

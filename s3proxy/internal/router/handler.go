@@ -10,17 +10,20 @@ package router
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/intrinsec/s3proxy/internal/config"
+	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	"github.com/intrinsec/s3proxy/internal/s3"
 	logger "github.com/sirupsen/logrus"
 )
 
-func handleGetObject(client s3Client, key string, bucket string, kek [32]byte, log *logger.Logger) http.HandlerFunc {
+func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
 		if req.Header.Get("Range") != "" {
@@ -35,7 +38,7 @@ func handleGetObject(client s3Client, key string, bucket string, kek [32]byte, l
 		}
 
 		obj := object{
-			kek:                  kek,
+			keks:                 keks,
 			client:               client,
 			key:                  key,
 			bucket:               bucket,
@@ -50,12 +53,17 @@ func handleGetObject(client s3Client, key string, bucket string, kek [32]byte, l
 	}
 }
 
-func handlePutObject(client s3Client, key string, bucket string, kek [32]byte, log *logger.Logger) http.HandlerFunc {
+func handlePutObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
 
-		body, err := readBody(req.Body, req.ContentLength)
+		body, err := readBody(req.Body, req.ContentLength, config.GetMaxPutBodySize())
 		if err != nil {
+			if errors.Is(err, errBodyTooLarge) {
+				log.WithField("error", err).Warn("PutObject body too large")
+				http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+				return
+			}
 			log.WithField("error", err).Error("PutObject reading body")
 			http.Error(w, "failed to read request body", http.StatusInternalServerError)
 			return
@@ -103,7 +111,7 @@ func handlePutObject(client s3Client, key string, bucket string, kek [32]byte, l
 		}
 
 		obj := object{
-			kek:                       kek,
+			keks:                      keks,
 			client:                    client,
 			key:                       key,
 			bucket:                    bucket,
