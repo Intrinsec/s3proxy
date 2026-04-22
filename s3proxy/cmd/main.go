@@ -37,38 +37,19 @@ const (
 )
 
 func main() {
+	log := logger.New()
+
 	flags, err := parseFlags()
 	if err != nil {
-		panic(err)
+		log.WithError(err).Fatal("parsing flags")
 	}
 
-	// logLevel can be made a public variable so logging level can be changed dynamically.
-	// TODO (derpsteb): enable once we are on go 1.21.
-	// logLevel := new(slog.LevelVar)
-	// handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
-	// logger := slog.New(handler)
-	// logLevel.Set(flags.logLevel)
-
-	log := logger.New()
-	// log.SetFormatter(&logger.JSONFormatter{})
-	switch {
-	case flags.logLevel <= -1:
-		log.SetLevel(logger.DebugLevel)
-	case flags.logLevel == 0:
-		log.SetLevel(logger.InfoLevel)
-	case flags.logLevel == 1:
-		log.SetLevel(logger.WarnLevel)
-	case flags.logLevel >= 2:
-		log.SetLevel(logger.ErrorLevel)
-	default:
-		log.SetLevel(logger.InfoLevel)
-	}
+	setLogLevel(log, flags.logLevel)
 
 	if err := config.LoadConfig(); err != nil {
-		panic(err)
+		log.WithError(err).Fatal("loading configuration")
 	}
 
-	// Validate configuration at startup
 	if err := config.ValidateConfiguration(); err != nil {
 		log.WithError(err).Fatal("configuration validation failed")
 	}
@@ -78,7 +59,20 @@ func main() {
 	}
 
 	if err := runServer(flags, log); err != nil {
-		panic(err)
+		log.WithError(err).Fatal("running server")
+	}
+}
+
+func setLogLevel(log *logger.Logger, level int) {
+	switch {
+	case level <= -1:
+		log.SetLevel(logger.DebugLevel)
+	case level == 1:
+		log.SetLevel(logger.WarnLevel)
+	case level >= 2:
+		log.SetLevel(logger.ErrorLevel)
+	default:
+		log.SetLevel(logger.InfoLevel)
 	}
 }
 
@@ -108,8 +102,9 @@ func runServer(flags cmdFlags, log *logger.Logger) error {
 	}
 
 	server := http.Server{
-		Addr:    fmt.Sprintf("%s:%d", flags.ip, defaultPort),
-		Handler: hMdw,
+		Addr:              fmt.Sprintf("%s:%d", flags.ip, defaultPort),
+		Handler:           hMdw,
+		ReadHeaderTimeout: 10 * time.Second,
 		// Disable HTTP/2. Serving HTTP/2 will cause some clients to use HTTP/2.
 		// It seems like AWS S3 does not support HTTP/2.
 		// Having HTTP/2 enabled will at least cause the aws-sdk-go V1 copy-object operation to fail.
@@ -128,11 +123,17 @@ func runServer(flags cmdFlags, log *logger.Logger) error {
 		}
 
 		// TLSConfig is populated, so we can safely pass empty strings to ListenAndServeTLS.
-		return server.ListenAndServeTLS("", "")
+		if err := server.ListenAndServeTLS("", ""); err != nil {
+			return fmt.Errorf("listen and serve TLS: %w", err)
+		}
+		return nil
 	}
 
 	log.Warn("TLS is disabled")
-	return server.ListenAndServe()
+	if err := server.ListenAndServe(); err != nil {
+		return fmt.Errorf("listen and serve: %w", err)
+	}
+	return nil
 }
 
 func isHealthCheckRequest(r *http.Request) bool {
@@ -144,7 +145,6 @@ func parseFlags() (cmdFlags, error) {
 	ip := flag.String("ip", defaultIP, "ip to listen on")
 	region := flag.String("region", defaultRegion, "AWS region in which target bucket is located")
 	certLocation := flag.String("cert", defaultCertLocation, "location of TLS certificate")
-	kmsEndpoint := flag.String("kms", "key-service.kube-system:9000", "endpoint of the KMS service to get key encryption keys from")
 	forwardMultipartReqs := flag.Bool("allow-multipart", false, "forward multipart requests to the target bucket; beware: this may store unencrypted data on AWS. See the documentation for more information")
 	level := flag.Int("level", defaultLogLevel, "log level")
 
@@ -155,18 +155,11 @@ func parseFlags() (cmdFlags, error) {
 		return cmdFlags{}, fmt.Errorf("not a valid IPv4 address: %s", *ip)
 	}
 
-	// TODO(derpsteb): enable once we are on go 1.21.
-	// logLevel := new(slog.Level)
-	// if err := logLevel.UnmarshalText([]byte(*level)); err != nil {
-	// 	return cmdFlags{}, fmt.Errorf("parsing log level: %w", err)
-	// }
-
 	return cmdFlags{
 		noTLS:                *noTLS,
 		ip:                   netIP.String(),
 		region:               *region,
 		certLocation:         *certLocation,
-		kmsEndpoint:          *kmsEndpoint,
 		forwardMultipartReqs: *forwardMultipartReqs,
 		logLevel:             *level,
 	}, nil
@@ -177,9 +170,6 @@ type cmdFlags struct {
 	ip                   string
 	region               string
 	certLocation         string
-	kmsEndpoint          string
 	forwardMultipartReqs bool
-	// TODO(derpsteb): enable once we are on go 1.21.
-	// logLevel slog.Level
-	logLevel int
+	logLevel             int
 }

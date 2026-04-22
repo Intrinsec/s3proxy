@@ -5,10 +5,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 */
 
 /*
-Package crypto provides encryption and decryption functions for the s3proxy.
+Package cryptoutil provides encryption and decryption functions for the s3proxy.
 It uses AES-256-GCM to encrypt and decrypt data.
 */
-package crypto
+package cryptoutil
 
 import (
 	"fmt"

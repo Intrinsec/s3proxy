@@ -46,7 +46,7 @@ func handleGetObject(client s3Client, key string, bucket string, kek [32]byte, l
 			sseCustomerKeyMD5:    req.Header.Get("x-amz-server-side-encryption-customer-key-MD5"),
 			log:                  log,
 		}
-		get(obj.get)(w, req)
+		requireGET(obj.get)(w, req)
 	}
 }
 
@@ -71,7 +71,7 @@ func handlePutObject(client s3Client, key string, bucket string, kek [32]byte, l
 		// Thus we have to check incoming requets for matching content digests.
 		// UNSIGNED-PAYLOAD can be used to disabled payload signing. In that case we don't check the content digest.
 		if clientDigest != "" && clientDigest != "UNSIGNED-PAYLOAD" && clientDigest != serverDigest {
-			log.Debug("PutObject", "error", "x-amz-content-sha256 mismatch")
+			log.WithField("error", "x-amz-content-sha256 mismatch").Debug("PutObject")
 			// The S3 API responds with an XML formatted error message.
 			mismatchErr := NewContentSHA256MismatchError(clientDigest, serverDigest)
 			marshalled, err := xml.Marshal(mismatchErr)
@@ -121,7 +121,7 @@ func handlePutObject(client s3Client, key string, bucket string, kek [32]byte, l
 			log:                       log,
 		}
 
-		put(obj.put)(w, req)
+		requirePUT(obj.put)(w, req)
 	}
 }
 
@@ -154,35 +154,40 @@ func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 			return
 		}
 
-		httpClient := http.DefaultClient
-		resp, err := httpClient.Do(newReq)
+		resp, err := forwardHTTPClient.Do(newReq)
 		if err != nil {
 			log.WithField("error", err).Error("do request")
-			http.Error(w, fmt.Sprintf("do request: %s", err.Error()), http.StatusInternalServerError)
+			http.Error(w, "do request: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		defer resp.Body.Close()
+		defer func() {
+			if cerr := resp.Body.Close(); cerr != nil {
+				log.WithError(cerr).Error("failed to close upstream response body")
+			}
+		}()
 
-		for key := range resp.Header {
-			w.Header().Set(key, resp.Header.Get(key))
+		// Preserve multi-value headers (Set-Cookie, Vary, etc.).
+		for key, values := range resp.Header {
+			w.Header()[key] = values
 		}
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.WithField("error", err).Error("failed to read response body")
-			http.Error(w, "failed to read response", http.StatusInternalServerError)
-			return
-		}
-
 		w.WriteHeader(resp.StatusCode)
-		if len(body) == 0 {
-			return
-		}
 
-		if _, err := w.Write(body); err != nil {
-			log.WithField("error", err).Error("failed to write response")
-			// Don't send error response as headers are already written
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			log.WithField("error", err).Error("failed to stream response")
+			// Headers already written; cannot send error response.
 		}
 	}
+}
+
+// forwardHTTPClient is the HTTP client used to send signed requests to the upstream S3 API.
+// Separate from http.DefaultClient so we can tune timeouts and transport independently.
+var forwardHTTPClient = &http.Client{
+	Timeout: 5 * time.Minute,
+	Transport: &http.Transport{
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	},
 }
 
 // handleCreateMultipartUpload logs the request and blocks with an error message.

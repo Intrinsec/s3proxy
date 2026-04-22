@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/intrinsec/s3proxy/internal/crypto"
+	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	logger "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -161,11 +161,11 @@ func TestPutObjectUsesRouterKEK(t *testing.T) {
 	require.True(t, ok)
 	encryptedDEK, err := hex.DecodeString(rawEncryptedDEK)
 	require.NoError(t, err)
-	plaintext, err := crypto.Decrypt(client.body, encryptedDEK, expectedKEK)
+	plaintext, err := cryptoutil.Decrypt(client.body, encryptedDEK, expectedKEK)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("secret payload"), plaintext)
 
-	_, err = crypto.Decrypt(client.body, encryptedDEK, [32]byte{})
+	_, err = cryptoutil.Decrypt(client.body, encryptedDEK, [32]byte{})
 	assert.Error(t, err)
 }
 
@@ -199,7 +199,7 @@ func TestGetObjectFailsWithWrongRouterKEK(t *testing.T) {
 func newEncryptedGetObjectClient(t *testing.T, kek [32]byte, plaintext []byte) *recordingS3Client {
 	t.Helper()
 
-	ciphertext, encryptedDEK, err := crypto.Encrypt(plaintext, kek)
+	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(plaintext, kek)
 	require.NoError(t, err)
 
 	return &recordingS3Client{

@@ -171,13 +171,6 @@ func byteSliceToByteArray(input []byte) ([32]byte, error) {
 	return ([32]byte)(input), nil
 }
 
-// containsBucket is a helper to recognizes cases where the bucket name is sent as part of the host.
-// In other cases the bucket name is sent as part of the path.
-// func containsBucket(host string) bool {
-// 	parts := strings.Split(host, ".")
-// 	return len(parts) > 4
-// }
-
 // isUnwantedGetEndpoint returns true if the request is any of these requests: GetObjectAcl, GetObjectAttributes, GetObjectLegalHold, GetObjectRetention, GetObjectTagging, GetObjectTorrent, ListParts.
 // These requests are all structured similarly: they all have a query param that is not present in GetObject.
 // Otherwise those endpoints are similar to GetObject.
@@ -333,13 +326,13 @@ func allowMethod(h http.HandlerFunc, method string) http.HandlerFunc {
 	}
 }
 
-// get takes a HandlerFunc and wraps it to only allow the GET method.
-func get(h http.HandlerFunc) http.HandlerFunc {
+// requireGET wraps a HandlerFunc to only allow HTTP GET requests.
+func requireGET(h http.HandlerFunc) http.HandlerFunc {
 	return allowMethod(h, http.MethodGet)
 }
 
-// put takes a HandlerFunc and wraps it to only allow the POST method.
-func put(h http.HandlerFunc) http.HandlerFunc {
+// requirePUT wraps a HandlerFunc to only allow HTTP PUT requests.
+func requirePUT(h http.HandlerFunc) http.HandlerFunc {
 	return allowMethod(h, http.MethodPut)
 }
 
@@ -408,15 +401,14 @@ func (r Router) getMultipartHandler(req *http.Request) http.Handler {
 }
 
 func (r Router) handleHealthEndpoints(w http.ResponseWriter, req *http.Request) bool {
-	if req.Method == http.MethodGet && (req.URL.Path == "/healthz" || req.URL.Path == "/readyz") {
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("ok")); err != nil {
-			// Log the error but don't fail the health check
-			r.log.WithError(err).Error("failed to write health check response")
-			// Try to set status code in case write partially failed
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-		return true
+	if req.Method != http.MethodGet || (req.URL.Path != "/healthz" && req.URL.Path != "/readyz") {
+		return false
 	}
-	return false
+
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte("ok")); err != nil {
+		// Status already written; log and move on.
+		r.log.WithError(err).Error("failed to write health check response")
+	}
+	return true
 }

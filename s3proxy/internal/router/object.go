@@ -14,8 +14,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,7 +22,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/intrinsec/s3proxy/internal/config"
-	"github.com/intrinsec/s3proxy/internal/crypto"
+	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	s3internal "github.com/intrinsec/s3proxy/internal/s3"
 	logger "github.com/sirupsen/logrus"
 )
@@ -101,7 +99,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		plaintext, err = crypto.Decrypt(body, encryptedDEK, o.kek)
+		plaintext, err = cryptoutil.Decrypt(body, encryptedDEK, o.kek)
 		if err != nil {
 			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decrypting response")
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
@@ -130,7 +128,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.New().String()
 	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Debug("putObject")
 
-	ciphertext, encryptedDEK, err := crypto.Encrypt(o.data, o.kek)
+	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(o.data, o.kek)
 	if err != nil {
 		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -203,8 +201,8 @@ func handleGetObjectError(w http.ResponseWriter, err error, requestID string, lo
 		log.WithField("requestID", requestID).WithField("code", code).WithField("httpResponseErr", httpResponseErr).Error("GetObject sending request to S3 (awshttp.ResponseError)")
 		if code != 0 {
 			var s3internalErr *s3internal.ErrorRawResponse
-			if errors.As(err, &s3internalErr) {
-				http.Error(w, s3internalErr.Error(), code)
+			if errors.As(err, &s3internalErr) && s3internalErr.RawResponse != "" {
+				http.Error(w, s3internalErr.RawResponse, code)
 			} else {
 				http.Error(w, err.Error(), code)
 			}
@@ -250,17 +248,13 @@ func setGetObjectHeaders(w http.ResponseWriter, output *s3.GetObjectOutput) {
 	}
 }
 
+// parseErrorCode extracts the HTTP status code from an AWS SDK error by unwrapping
+// *awshttp.ResponseError. Returns 0 when no HTTP response is attached.
 func parseErrorCode(err error) int {
-	regex := regexp.MustCompile(`https response error StatusCode: (\d+)`)
-	matches := regex.FindStringSubmatch(err.Error())
-	if len(matches) > 1 {
-		code, err := strconv.Atoi(matches[1])
-		if err != nil {
-			return 0
-		}
-		return code
+	var httpResponseErr *awshttp.ResponseError
+	if errors.As(err, &httpResponseErr) {
+		return httpResponseErr.HTTPStatusCode()
 	}
-
 	return 0
 }
 

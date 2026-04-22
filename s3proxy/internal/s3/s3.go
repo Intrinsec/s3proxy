@@ -37,8 +37,11 @@ type Client struct {
 	s3config *aws.Config
 }
 
+// RawResponseKey is the context/metadata key used to store the raw S3 HTTP response body.
 type RawResponseKey struct{}
 
+// ErrorRawResponse wraps an AWS SDK error with the raw upstream HTTP response body that produced it.
+// Error() returns the wrapped error message; consumers may read RawResponse for the upstream body.
 type ErrorRawResponse struct {
 	err         error
 	RawResponse string
@@ -49,7 +52,10 @@ func (m *ErrorRawResponse) Unwrap() error {
 }
 
 func (m *ErrorRawResponse) Error() string {
-	return m.RawResponse
+	if m.err == nil {
+		return ""
+	}
+	return m.err.Error()
 }
 
 func readBody(body io.Reader, contentLength int64) ([]byte, error) {
