@@ -275,8 +275,12 @@ func repackage(r *http.Request) (*http.Request, error) {
 
 	req.Host = host
 	req.URL.Host = host
-	// We always want to use HTTPS when talking to S3.
+	// Default to HTTPS for upstream S3. S3PROXY_INSECURE=1 flips to plain HTTP,
+	// which is intended only for local/e2e testing against plaintext MinIO.
 	req.URL.Scheme = "https"
+	if config.GetInsecure() {
+		req.URL.Scheme = "http"
+	}
 
 	headersToRemove := []string{
 		"X-Real-Ip",

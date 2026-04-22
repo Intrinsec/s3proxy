@@ -74,6 +74,13 @@ func (c *Config) ThrottlingRequestsMax() int {
 	return c.k.Int("s3proxy.throttling.requestsmax")
 }
 
+// Insecure reports whether upstream S3 traffic should use http:// instead of the
+// default https:// (set via S3PROXY_INSECURE=1). Intended for development and
+// e2e tests against plaintext MinIO; production deployments should leave this off.
+func (c *Config) Insecure() bool {
+	return c.k.Bool("s3proxy.insecure")
+}
+
 // MaxPutBodySize returns the configured PutObject body cap in bytes. Falls back to
 // DefaultMaxPutBodySize when S3PROXY_PUTBODY_MAX is unset, zero, or out of range.
 func (c *Config) MaxPutBodySize() int64 {
@@ -136,3 +143,6 @@ func GetThrottlingRequestsMax() int { return Default().ThrottlingRequestsMax() }
 
 // GetMaxPutBodySize returns the PutObject body cap from the default config.
 func GetMaxPutBodySize() int64 { return Default().MaxPutBodySize() }
+
+// GetInsecure returns whether upstream S3 traffic should use http:// from the default config.
+func GetInsecure() bool { return Default().Insecure() }

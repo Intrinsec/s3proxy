@@ -143,9 +143,14 @@ func NewClient(ctx context.Context, region string, log *slog.Logger) (*Client, e
 		return nil, fmt.Errorf("loading AWS S3 client config: %w", err)
 	}
 
+	scheme := "https"
+	if configs3proxy.GetInsecure() {
+		scheme = "http"
+	}
+
 	client := s3.NewFromConfig(clientCfg, func(o *s3.Options) {
 		o.UsePathStyle = true // Ensure "path-style" is used with MinIO
-		o.BaseEndpoint = aws.String("https://" + host)
+		o.BaseEndpoint = aws.String(scheme + "://" + host)
 		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 		o.APIOptions = append(o.APIOptions, addCaptureRawResponseDeserializeMiddleware(log))
