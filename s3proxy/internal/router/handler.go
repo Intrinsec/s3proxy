@@ -78,7 +78,7 @@ func handlePutObject(client *s3.Client, key string, bucket string, log *logger.L
 			return
 		}
 
-		body, err := io.ReadAll(req.Body)
+		body, err := readBody(req.Body, req.ContentLength)
 		if err != nil {
 			log.WithField("error", err).Error("PutObject reading body")
 			http.Error(w, "failed to read request body", http.StatusInternalServerError)

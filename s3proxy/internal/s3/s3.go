@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -51,7 +52,22 @@ func (m *ErrorRawResponse) Error() string {
 	return m.RawResponse
 }
 
-// Middleware to capture the raw response in the Send phase by cloning and storing the response body
+func readBody(body io.Reader, contentLength int64) ([]byte, error) {
+	if contentLength <= 0 {
+		return io.ReadAll(body)
+	}
+	if contentLength > int64(int(^uint(0)>>1)) {
+		return nil, fmt.Errorf("content length %d exceeds maximum supported size", contentLength)
+	}
+
+	bodyBytes := make([]byte, int(contentLength))
+	if _, err := io.ReadFull(body, bodyBytes); err != nil {
+		return nil, err
+	}
+	return bodyBytes, nil
+}
+
+// Middleware to capture error response bodies without cloning successful object bodies.
 func addCaptureRawResponseDeserializeMiddleware(log *logger.Logger) func(*middleware.Stack) error {
 	return func(stack *middleware.Stack) error {
 		return stack.Deserialize.Add(middleware.DeserializeMiddlewareFunc("CaptureRawResponseDeserialize", func(
@@ -61,25 +77,17 @@ func addCaptureRawResponseDeserializeMiddleware(log *logger.Logger) func(*middle
 		) {
 			out, metadata, err = next.HandleDeserialize(ctx, in)
 			if resp, ok := out.RawResponse.(*smithyhttp.Response); ok {
-				// Clone the response body
-				var buf bytes.Buffer
-				body := resp.Body
-				tee := io.NopCloser(io.TeeReader(body, &buf))
+				if resp.StatusCode < http.StatusBadRequest {
+					return out, metadata, err
+				}
 
-				// Replace the body in the response with the cloned body
-				resp.Body = tee
-
-				bodyBytes, err := io.ReadAll(resp.Body)
+				bodyBytes, err := readBody(resp.Body, resp.ContentLength)
 				if err != nil {
 					log.WithError(err).Error("failed to read response body")
-					// Return the error to prevent silent failures
 					return out, metadata, fmt.Errorf("reading response body: %w", err)
 				}
 
-				// Store the cloned body in metadata
 				metadata.Set(RawResponseKey{}, string(bodyBytes))
-
-				// Restore the original body for further processing
 				resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 			}
 			return out, metadata, err

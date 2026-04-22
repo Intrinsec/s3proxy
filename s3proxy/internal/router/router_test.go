@@ -6,9 +6,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 package router
 
 import (
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateContentMD5(t *testing.T) {
@@ -84,4 +87,25 @@ func TestByteSliceToByteArray(t *testing.T) {
 			assert.Equal(t, tc.output, result)
 		})
 	}
+}
+
+func TestReadBodyUsesKnownContentLength(t *testing.T) {
+	body, err := readBody(strings.NewReader("hello"), 5)
+
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), body)
+	assert.Equal(t, 5, cap(body))
+}
+
+func TestReadBodyFallsBackWhenContentLengthUnknown(t *testing.T) {
+	body, err := readBody(strings.NewReader("hello"), -1)
+
+	require.NoError(t, err)
+	assert.Equal(t, []byte("hello"), body)
+}
+
+func TestReadBodyReturnsErrorOnShortBody(t *testing.T) {
+	_, err := readBody(strings.NewReader("hi"), 5)
+
+	assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
 }
