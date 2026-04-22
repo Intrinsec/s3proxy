@@ -22,11 +22,13 @@ package router
 
 import (
 	"bytes"
+	"context"
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -34,8 +36,9 @@ import (
 	"time"
 
 	"github.com/intrinsec/s3proxy/internal/config"
+	"github.com/intrinsec/s3proxy/internal/cryptoutil"
+	"github.com/intrinsec/s3proxy/internal/monitoring"
 	"github.com/intrinsec/s3proxy/internal/s3"
-	logger "github.com/sirupsen/logrus"
 )
 
 var (
@@ -45,28 +48,45 @@ var (
 // Router implements the interception logic for the s3proxy.
 type Router struct {
 	region string
-	kek    [32]byte
+	// keks holds all supported KEK derivations so that objects written under an older
+	// scheme remain readable while new writes use the current scheme.
+	keks   cryptoutil.KEKProvider
+	client *s3.Client
 	// forwardMultipartReqs controls whether we forward the following requests: CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload.
 	// s3proxy does not implement those yet.
 	// Setting forwardMultipartReqs to true will forward those requests to the S3 API, otherwise we block them (secure defaults).
 	forwardMultipartReqs bool
-	log                  *logger.Logger
+	log                  *slog.Logger
+	metrics              *monitoring.Metrics
 }
 
-// Function to generate a 32-byte array (KEK) from a string input using SHA-256
-func generateKEKFromString(input string) [32]byte {
-	hash := sha256.Sum256([]byte(input))
-	return hash
-}
-
-// New creates a new Router.
-func New(region string, forwardMultipartReqs bool, log *logger.Logger) (Router, error) {
-	result, err := config.GetEncryptKey()
+// New creates a new Router. The S3 client is built once here and reused for every
+// incoming request — the AWS SDK client is safe for concurrent use and maintains
+// its own HTTP connection pool and credentials cache.
+func New(ctx context.Context, region string, forwardMultipartReqs bool, log *slog.Logger, metrics *monitoring.Metrics) (Router, error) {
+	seed, err := config.GetEncryptKey()
 	if err != nil {
-		return Router{}, err
+		return Router{}, fmt.Errorf("getting encryption key: %w", err)
 	}
-	kekArray := generateKEKFromString(result)
-	return Router{region: region, kek: kekArray, forwardMultipartReqs: forwardMultipartReqs, log: log}, nil
+
+	keks, err := cryptoutil.NewKEKProvider(seed)
+	if err != nil {
+		return Router{}, fmt.Errorf("deriving KEKs: %w", err)
+	}
+
+	client, err := s3.NewClient(ctx, region, log)
+	if err != nil {
+		return Router{}, fmt.Errorf("creating S3 client: %w", err)
+	}
+
+	return Router{
+		region:               region,
+		keks:                 keks,
+		client:               client,
+		forwardMultipartReqs: forwardMultipartReqs,
+		log:                  log,
+		metrics:              metrics,
+	}, nil
 }
 
 // Serve implements the routing logic for the s3 proxy.
@@ -79,40 +99,43 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	client, err := s3.NewClient(r.region, r.log)
-	if err != nil {
-		r.log.WithError(err).Error("failed to create S3 client")
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
 	var key, bucket string
 	matchingPath := match(req.URL.Path, bucketAndKeyPattern, &bucket, &key)
 
 	// Validate bucket and key if we have a matching path
 	if matchingPath {
 		if err := config.ValidateBucketName(bucket); err != nil {
-			r.log.WithError(err).WithField("bucket", bucket).Warn("invalid bucket name")
+			r.log.Warn("invalid bucket name", "error", err, "bucket", bucket)
+			r.incError("invalid_bucket")
 			http.Error(w, fmt.Sprintf("invalid bucket name: %s", err.Error()), http.StatusBadRequest)
 			return
 		}
 		if err := config.ValidateObjectKey(key); err != nil {
-			r.log.WithError(err).WithField("key", key).Warn("invalid object key")
+			r.log.Warn("invalid object key", "error", err, "key", key)
+			r.incError("invalid_key")
 			http.Error(w, fmt.Sprintf("invalid object key: %s", err.Error()), http.StatusBadRequest)
 			return
 		}
 	}
 
-	// Validate content length for PUT requests
+	// Validate content length for PUT requests: both the absolute S3 ceiling and the
+	// in-memory PutObject body cap enforced by s3proxy.
 	if req.Method == http.MethodPut && req.ContentLength > 0 {
 		if err := config.ValidateContentLength(req.ContentLength); err != nil {
-			r.log.WithError(err).WithField("content_length", req.ContentLength).Warn("invalid content length")
+			r.log.Warn("invalid content length", "error", err, "content_length", req.ContentLength)
+			r.incError("invalid_content_length")
+			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
+		if err := config.ValidatePutBodySize(req.ContentLength); err != nil {
+			r.log.Warn("put body too large", "error", err, "content_length", req.ContentLength)
+			r.incError("put_body_too_large")
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
 	}
 
-	h := r.getHandler(req, client, matchingPath, key, bucket)
+	h := r.getHandler(req, r.client, matchingPath, key, bucket)
 	h.ServeHTTP(w, req)
 }
 
@@ -170,13 +193,6 @@ func byteSliceToByteArray(input []byte) ([32]byte, error) {
 
 	return ([32]byte)(input), nil
 }
-
-// containsBucket is a helper to recognizes cases where the bucket name is sent as part of the host.
-// In other cases the bucket name is sent as part of the path.
-// func containsBucket(host string) bool {
-// 	parts := strings.Split(host, ".")
-// 	return len(parts) > 4
-// }
 
 // isUnwantedGetEndpoint returns true if the request is any of these requests: GetObjectAcl, GetObjectAttributes, GetObjectLegalHold, GetObjectRetention, GetObjectTagging, GetObjectTorrent, ListParts.
 // These requests are all structured similarly: they all have a query param that is not present in GetObject.
@@ -259,8 +275,12 @@ func repackage(r *http.Request) (*http.Request, error) {
 
 	req.Host = host
 	req.URL.Host = host
-	// We always want to use HTTPS when talking to S3.
+	// Default to HTTPS for upstream S3. S3PROXY_INSECURE=1 flips to plain HTTP,
+	// which is intended only for local/e2e testing against plaintext MinIO.
 	req.URL.Scheme = "https"
+	if config.GetInsecure() {
+		req.URL.Scheme = "http"
+	}
 
 	headersToRemove := []string{
 		"X-Real-Ip",
@@ -333,13 +353,13 @@ func allowMethod(h http.HandlerFunc, method string) http.HandlerFunc {
 	}
 }
 
-// get takes a HandlerFunc and wraps it to only allow the GET method.
-func get(h http.HandlerFunc) http.HandlerFunc {
+// requireGET wraps a HandlerFunc to only allow HTTP GET requests.
+func requireGET(h http.HandlerFunc) http.HandlerFunc {
 	return allowMethod(h, http.MethodGet)
 }
 
-// put takes a HandlerFunc and wraps it to only allow the POST method.
-func put(h http.HandlerFunc) http.HandlerFunc {
+// requirePUT wraps a HandlerFunc to only allow HTTP PUT requests.
+func requirePUT(h http.HandlerFunc) http.HandlerFunc {
 	return allowMethod(h, http.MethodPut)
 }
 
@@ -347,7 +367,7 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 	forwardHandler := func() http.Handler {
 		s3Client, ok := client.(*s3.Client)
 		if ok {
-			return handleForwards(s3Client, r.log)
+			return handleForwards(s3Client, r.log, r.metrics)
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -368,11 +388,11 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 	switch req.Method {
 	case http.MethodGet:
 		if !isUnwantedGetEndpoint(req.URL.Query()) {
-			return handleGetObject(client, key, bucket, r.kek, r.log)
+			return handleGetObject(client, key, bucket, r.keks, r.log, r.metrics)
 		}
 	case http.MethodPut:
 		if !isUnwantedPutEndpoint(req.Header, req.URL.Query()) {
-			return handlePutObject(client, key, bucket, r.kek, r.log)
+			return handlePutObject(client, key, bucket, r.keks, r.log, r.metrics)
 		}
 	}
 
@@ -407,16 +427,59 @@ func (r Router) getMultipartHandler(req *http.Request) http.Handler {
 	return nil
 }
 
+// readinessProbeTimeout bounds how long /readyz waits for the upstream check.
+const readinessProbeTimeout = 2 * time.Second
+
 func (r Router) handleHealthEndpoints(w http.ResponseWriter, req *http.Request) bool {
-	if req.Method == http.MethodGet && (req.URL.Path == "/healthz" || req.URL.Path == "/readyz") {
-		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write([]byte("ok")); err != nil {
-			// Log the error but don't fail the health check
-			r.log.WithError(err).Error("failed to write health check response")
-			// Try to set status code in case write partially failed
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-		return true
+	if req.Method != http.MethodGet {
+		return false
 	}
-	return false
+
+	switch req.URL.Path {
+	case "/healthz":
+		writeHealthResponse(w, http.StatusOK, "ok", r.log)
+		return true
+	case "/readyz":
+		r.serveReadyz(w, req)
+		return true
+	default:
+		return false
+	}
+}
+
+// serveReadyz checks that the process is ready to serve S3 traffic by issuing a
+// short-lived ListBuckets probe against the upstream. Returns 200 on success and
+// 503 (with a text reason) otherwise. /healthz stays trivially 200 — it only
+// attests that the process is alive.
+func (r Router) serveReadyz(w http.ResponseWriter, req *http.Request) {
+	if r.client == nil {
+		writeHealthResponse(w, http.StatusServiceUnavailable, "no upstream client", r.log)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(req.Context(), readinessProbeTimeout)
+	defer cancel()
+
+	if err := r.client.Ping(ctx); err != nil {
+		r.log.Warn("readiness probe failed", "error", err)
+		writeHealthResponse(w, http.StatusServiceUnavailable, "upstream unreachable", r.log)
+		return
+	}
+
+	writeHealthResponse(w, http.StatusOK, "ok", r.log)
+}
+
+func writeHealthResponse(w http.ResponseWriter, status int, body string, log *slog.Logger) {
+	w.WriteHeader(status)
+	if _, err := w.Write([]byte(body)); err != nil {
+		log.Error("failed to write health check response", "error", err)
+	}
+}
+
+// incError is a nil-safe helper to bump ErrorsTotal{type=class}.
+func (r Router) incError(class string) {
+	if r.metrics == nil {
+		return
+	}
+	r.metrics.ErrorsTotal.WithLabelValues(class).Inc()
 }

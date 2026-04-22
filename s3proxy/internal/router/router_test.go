@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/hex"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,8 +18,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/intrinsec/s3proxy/internal/crypto"
-	logger "github.com/sirupsen/logrus"
+	"github.com/intrinsec/s3proxy/internal/config"
+	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -45,10 +46,8 @@ func (c *recordingS3Client) PutObject(_ context.Context, _, _, _, _, _, _, _, _,
 	return &s3.PutObjectOutput{}, nil
 }
 
-func testLogger() *logger.Logger {
-	log := logger.New()
-	log.SetOutput(io.Discard)
-	return log
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
 func TestValidateContentMD5(t *testing.T) {
@@ -127,7 +126,7 @@ func TestByteSliceToByteArray(t *testing.T) {
 }
 
 func TestReadBodyUsesKnownContentLength(t *testing.T) {
-	body, err := readBody(strings.NewReader("hello"), 5)
+	body, err := readBody(strings.NewReader("hello"), 5, 0)
 
 	require.NoError(t, err)
 	assert.Equal(t, []byte("hello"), body)
@@ -135,44 +134,61 @@ func TestReadBodyUsesKnownContentLength(t *testing.T) {
 }
 
 func TestReadBodyFallsBackWhenContentLengthUnknown(t *testing.T) {
-	body, err := readBody(strings.NewReader("hello"), -1)
+	body, err := readBody(strings.NewReader("hello"), -1, 0)
 
 	require.NoError(t, err)
 	assert.Equal(t, []byte("hello"), body)
 }
 
 func TestReadBodyReturnsErrorOnShortBody(t *testing.T) {
-	_, err := readBody(strings.NewReader("hi"), 5)
+	_, err := readBody(strings.NewReader("hi"), 5, 0)
 
 	assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
 }
 
+func TestReadBodyRejectsDeclaredSizeOverCap(t *testing.T) {
+	_, err := readBody(strings.NewReader("hello"), 5, 3)
+
+	assert.ErrorIs(t, err, errBodyTooLarge)
+}
+
+func TestReadBodyRejectsUndeclaredSizeOverCap(t *testing.T) {
+	_, err := readBody(strings.NewReader("hello"), -1, 3)
+
+	assert.ErrorIs(t, err, errBodyTooLarge)
+}
+
 func TestPutObjectUsesRouterKEK(t *testing.T) {
-	expectedKEK := generateKEKFromString("expected encryption key")
+	keks := newTestKEKs(t, "expected encryption key")
 	client := &recordingS3Client{}
-	router := Router{kek: expectedKEK, log: testLogger()}
+	router := Router{keks: keks, log: testLogger()}
 	req := httptest.NewRequest(http.MethodPut, "/bucket/key", bytes.NewReader([]byte("secret payload")))
 	rec := httptest.NewRecorder()
 
 	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	rawEncryptedDEK, ok := client.metadata[dekTag]
+	rawEncryptedDEK, ok := client.metadata[config.GetDekTagName()]
 	require.True(t, ok)
 	encryptedDEK, err := hex.DecodeString(rawEncryptedDEK)
 	require.NoError(t, err)
-	plaintext, err := crypto.Decrypt(client.body, encryptedDEK, expectedKEK)
+
+	version, curKEK := keks.Current()
+	assert.Equal(t, version, client.metadata[config.GetKEKVersionTagName()])
+
+	plaintext, err := cryptoutil.Decrypt(client.body, encryptedDEK, curKEK)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("secret payload"), plaintext)
 
-	_, err = crypto.Decrypt(client.body, encryptedDEK, [32]byte{})
+	_, err = cryptoutil.Decrypt(client.body, encryptedDEK, [32]byte{})
 	assert.Error(t, err)
 }
 
 func TestGetObjectUsesRouterKEK(t *testing.T) {
-	expectedKEK := generateKEKFromString("expected encryption key")
-	client := newEncryptedGetObjectClient(t, expectedKEK, []byte("secret payload"))
-	router := Router{kek: expectedKEK, log: testLogger()}
+	keks := newTestKEKs(t, "expected encryption key")
+	version, curKEK := keks.Current()
+	client := newEncryptedGetObjectClient(t, curKEK, version, []byte("secret payload"))
+	router := Router{keks: keks, log: testLogger()}
 	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
 	rec := httptest.NewRecorder()
 
@@ -183,10 +199,11 @@ func TestGetObjectUsesRouterKEK(t *testing.T) {
 }
 
 func TestGetObjectFailsWithWrongRouterKEK(t *testing.T) {
-	storedObjectKEK := generateKEKFromString("old encryption key")
-	routerKEK := generateKEKFromString("new encryption key")
-	client := newEncryptedGetObjectClient(t, storedObjectKEK, []byte("secret payload"))
-	router := Router{kek: routerKEK, log: testLogger()}
+	storedKeks := newTestKEKs(t, "old encryption key")
+	routerKeks := newTestKEKs(t, "new encryption key")
+	version, storedKEK := storedKeks.Current()
+	client := newEncryptedGetObjectClient(t, storedKEK, version, []byte("secret payload"))
+	router := Router{keks: routerKeks, log: testLogger()}
 	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
 	rec := httptest.NewRecorder()
 
@@ -196,19 +213,46 @@ func TestGetObjectFailsWithWrongRouterKEK(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "failed to decrypt object")
 }
 
-func newEncryptedGetObjectClient(t *testing.T, kek [32]byte, plaintext []byte) *recordingS3Client {
+func TestGetObjectReadsLegacyObjectWithoutKEKVersion(t *testing.T) {
+	keks := newTestKEKs(t, "shared seed")
+	legacyKEK, ok := keks.For(cryptoutil.KEKVersionLegacy)
+	require.True(t, ok)
+	client := newEncryptedGetObjectClient(t, legacyKEK, "", []byte("legacy payload"))
+	router := Router{keks: keks, log: testLogger()}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "legacy payload", rec.Body.String())
+}
+
+func newTestKEKs(t *testing.T, seed string) cryptoutil.KEKProvider {
+	t.Helper()
+	keks, err := cryptoutil.NewKEKProvider(seed)
+	require.NoError(t, err)
+	return keks
+}
+
+func newEncryptedGetObjectClient(t *testing.T, kek [32]byte, kekVersion string, plaintext []byte) *recordingS3Client {
 	t.Helper()
 
-	ciphertext, encryptedDEK, err := crypto.Encrypt(plaintext, kek)
+	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(plaintext, kek)
 	require.NoError(t, err)
+
+	metadata := map[string]string{
+		config.GetDekTagName(): hex.EncodeToString(encryptedDEK),
+	}
+	if kekVersion != "" {
+		metadata[config.GetKEKVersionTagName()] = kekVersion
+	}
 
 	return &recordingS3Client{
 		getObjectOut: &s3.GetObjectOutput{
 			Body:          io.NopCloser(bytes.NewReader(ciphertext)),
 			ContentLength: awsInt64(int64(len(ciphertext))),
-			Metadata: map[string]string{
-				dekTag: hex.EncodeToString(encryptedDEK),
-			},
+			Metadata:      metadata,
 		},
 	}
 }

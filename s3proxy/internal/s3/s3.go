@@ -14,10 +14,9 @@ package s3
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
-	"encoding/base64"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -28,7 +27,6 @@ import (
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	configs3proxy "github.com/intrinsec/s3proxy/internal/config"
-	logger "github.com/sirupsen/logrus"
 )
 
 // Client is a wrapper around the AWS S3 client.
@@ -37,8 +35,11 @@ type Client struct {
 	s3config *aws.Config
 }
 
+// RawResponseKey is the context/metadata key used to store the raw S3 HTTP response body.
 type RawResponseKey struct{}
 
+// ErrorRawResponse wraps an AWS SDK error with the raw upstream HTTP response body that produced it.
+// Error() returns the wrapped error message; consumers may read RawResponse for the upstream body.
 type ErrorRawResponse struct {
 	err         error
 	RawResponse string
@@ -49,7 +50,10 @@ func (m *ErrorRawResponse) Unwrap() error {
 }
 
 func (m *ErrorRawResponse) Error() string {
-	return m.RawResponse
+	if m.err == nil {
+		return ""
+	}
+	return m.err.Error()
 }
 
 func readBody(body io.Reader, contentLength int64) ([]byte, error) {
@@ -68,7 +72,7 @@ func readBody(body io.Reader, contentLength int64) ([]byte, error) {
 }
 
 // Middleware to capture error response bodies without cloning successful object bodies.
-func addCaptureRawResponseDeserializeMiddleware(log *logger.Logger) func(*middleware.Stack) error {
+func addCaptureRawResponseDeserializeMiddleware(log *slog.Logger) func(*middleware.Stack) error {
 	return func(stack *middleware.Stack) error {
 		return stack.Deserialize.Add(middleware.DeserializeMiddlewareFunc("CaptureRawResponseDeserialize", func(
 			ctx context.Context, in middleware.DeserializeInput, next middleware.DeserializeHandler,
@@ -83,7 +87,7 @@ func addCaptureRawResponseDeserializeMiddleware(log *logger.Logger) func(*middle
 
 				bodyBytes, err := readBody(resp.Body, resp.ContentLength)
 				if err != nil {
-					log.WithError(err).Error("failed to read response body")
+					log.Error("failed to read response body", "error", err)
 					return out, metadata, fmt.Errorf("reading response body: %w", err)
 				}
 
@@ -122,13 +126,12 @@ func addCaptureRawResponseInitializeMiddleware() func(*middleware.Stack) error {
 	}
 }
 
-// NewClient creates a new AWS S3 client.
-func NewClient(region string, log *logger.Logger) (*Client, error) {
-	// Use context.Background here because this context will not influence the later operations of the client.
-	// The context given here is used for http requests that are made during client construction.
-	// Client construction happens once during proxy setup.
+// NewClient creates a new AWS S3 client. The provided context is used only for HTTP
+// requests made during client construction (credentials discovery, etc.); it does not
+// bound subsequent request lifetimes. Client construction happens once during proxy setup.
+func NewClient(ctx context.Context, region string, log *slog.Logger) (*Client, error) {
 	clientCfg, err := config.LoadDefaultConfig(
-		context.Background(),
+		ctx,
 		config.WithRegion(region),
 	)
 	if err != nil {
@@ -140,11 +143,21 @@ func NewClient(region string, log *logger.Logger) (*Client, error) {
 		return nil, fmt.Errorf("loading AWS S3 client config: %w", err)
 	}
 
+	scheme := "https"
+	if configs3proxy.GetInsecure() {
+		scheme = "http"
+	}
+
 	client := s3.NewFromConfig(clientCfg, func(o *s3.Options) {
 		o.UsePathStyle = true // Ensure "path-style" is used with MinIO
-		o.BaseEndpoint = aws.String("https://" + host)
-		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
-		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
+		o.BaseEndpoint = aws.String(scheme + "://" + host)
+		// Compute a CRC32 on every upload so the backing store persists it and GetObject
+		// responses carry the header the SDK needs to actually validate the payload.
+		// With WhenRequired the SDK skips checksum work unless S3 mandates it, which left
+		// ciphertext objects without an at-rest checksum and surfaced a "Response has no
+		// supported checksum. Not validating response payload." SDK warning on every GET.
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenSupported
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenSupported
 		o.APIOptions = append(o.APIOptions, addCaptureRawResponseDeserializeMiddleware(log))
 		o.APIOptions = append(o.APIOptions, addCaptureRawResponseInitializeMiddleware())
 	})
@@ -152,8 +165,19 @@ func NewClient(region string, log *logger.Logger) (*Client, error) {
 	return &Client{s3client: client, s3config: &clientCfg}, nil
 }
 
+// GetConfig returns the underlying AWS SDK configuration used by the client.
 func (c Client) GetConfig() *aws.Config {
 	return c.s3config
+}
+
+// Ping issues a lightweight ListBuckets call against the upstream S3 endpoint and
+// returns nil when the call completes without error. Intended as a readiness probe:
+// it exercises both connectivity and credentials without requiring a specific bucket.
+func (c Client) Ping(ctx context.Context) error {
+	if _, err := c.s3client.ListBuckets(ctx, &s3.ListBucketsInput{}); err != nil {
+		return fmt.Errorf("s3 ListBuckets: %w", err)
+	}
+	return nil
 }
 
 // GetObject returns the object with the given key from the given bucket.
@@ -193,17 +217,17 @@ func (c Client) PutObject(ctx context.Context, bucket, key, tags, contentType, o
 		contentType = "binary/octet-stream"
 	}
 
-	// #nosec G401
-	contentMD5 := md5.Sum(body)
-	encodedContentMD5 := base64.StdEncoding.EncodeToString(contentMD5[:])
-
+	// Rely on the AWS SDK's built-in checksum calculation (RequestChecksumCalculation is
+	// configured in NewClient). Setting ContentMD5 explicitly is redundant: the SDK already
+	// signs a CRC32/SHA256 checksum when the S3 operation requires integrity, and S3 will
+	// reject the request on mismatch. Computing MD5 here additionally forced a full extra
+	// hash pass over the (already large) ciphertext buffer.
 	putObjectInput := &s3.PutObjectInput{
 		Bucket:                    &bucket,
 		Key:                       &key,
 		Body:                      bytes.NewReader(body),
 		Tagging:                   &tags,
 		Metadata:                  metadata,
-		ContentMD5:                &encodedContentMD5,
 		ContentType:               &contentType,
 		ObjectLockLegalHoldStatus: types.ObjectLockLegalHoldStatus(objectLockLegalHoldStatus),
 	}

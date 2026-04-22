@@ -25,6 +25,15 @@ config:
   # accessKey: CHANGEME
   # secretKey: CHANGEME
   # encryptKey: CHANGEME
+  # OpenTelemetry OTLP/HTTP tracing. Leave unset to disable trace export.
+  # otlpEndpoint: https://otel-collector.observability.svc.cluster.local:4318
+  # otlpTracesEndpoint: https://otel-collector.observability.svc.cluster.local:4318/v1/traces
+  # otlpHeaders: "authorization=Bearer CHANGEME"
+
+# Extra environment variables appended to the container env.
+extraEnv: []
+# - name: SOMETHING
+#   value: "value"
 valsSecret: {}
 #   accessKey: ref+vault://s3proxy/secrets/access-key
 #   secretKey: ref+vault://s3proxy/secrets/secret-key
@@ -76,6 +85,48 @@ autoscaling:
   maxReplicas: 5
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 70
+
+# ServiceMonitor for the Prometheus Operator. Requires the
+# monitoring.coreos.com/v1 CRD to be installed in the cluster.
+serviceMonitor:
+  enabled: false
+  # namespace: monitoring
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  # scheme: https  # flip to http when running with --no-tls
+  labels: {}
+  # tlsConfig is needed when metrics are served over the same TLS as S3 traffic.
+  tlsConfig:
+    insecureSkipVerify: true
+  relabelings: []
+  metricRelabelings: []
+
+# PrometheusRule bundles the s3proxy alert rules (HighErrorRate, HighLatency,
+# ServiceDown, HighCrashRate). Requires the monitoring.coreos.com/v1 CRD.
+prometheusRule:
+  enabled: false
+  # namespace: monitoring
+  labels: {}
+  thresholds:
+    highErrorRate: 0.05
+    highLatencySeconds: 2
+    crashes: 0
+  for:
+    highErrorRate: 10m
+    highLatency: 10m
+    serviceDown: 2m
+    highCrashRate: 5m
+
+# Grafana dashboard ConfigMap. When enabled the chart ships a ConfigMap
+# carrying the s3proxy dashboard JSON, labeled so the grafana-operator /
+# dashboard sidecar picks it up automatically.
+grafanaDashboard:
+  enabled: false
+  # namespace: monitoring
+  label: grafana_dashboard
+  labels: {}
+  annotations: {}
 
 # Additional volumes on the output Deployment definition.
 extraVolumes: []

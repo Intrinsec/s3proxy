@@ -12,10 +12,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
-	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -24,20 +23,20 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/intrinsec/s3proxy/internal/config"
-	"github.com/intrinsec/s3proxy/internal/crypto"
+	"github.com/intrinsec/s3proxy/internal/cryptoutil"
+	"github.com/intrinsec/s3proxy/internal/monitoring"
 	s3internal "github.com/intrinsec/s3proxy/internal/s3"
-	logger "github.com/sirupsen/logrus"
 )
 
-var (
-	// dekTag is the name of the header that holds the encrypted data encryption key for the attached object. Presence of the key implies the object needs to be decrypted.
-	// Use lowercase only, as AWS automatically lowercases all metadata keys.
-	dekTag = config.GetDekTagName()
-)
+// s3OperationTimeout bounds the total duration of an individual S3 GetObject/PutObject call.
+// We detach from the request context (context.WithoutCancel) so a client disconnect does not
+// abort a partially-uploaded PutObject, but we still cap overall work to protect against
+// hung upstreams producing zombie requests.
+const s3OperationTimeout = 2 * time.Minute
 
 // object bundles data to implement http.Handler methods that use data from incoming requests.
 type object struct {
-	kek                       [32]byte
+	keks                      cryptoutil.KEKProvider
 	client                    s3Client
 	key                       string
 	bucket                    string
@@ -53,21 +52,30 @@ type object struct {
 	sseCustomerKey            string
 	sseCustomerKeyMD5         string
 	versionID                 string
-	log                       *logger.Logger
+	log                       *slog.Logger
+	metrics                   *monitoring.Metrics
 }
 
 // get is a http.HandlerFunc that implements the GET method for objects.
 func (o object) get(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.New().String()
+	log := o.log.With("request_id", requestID)
 
-	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Debug("getObject")
+	log.Debug("getObject", "key", o.key, "bucket", o.bucket)
 
-	output, err := o.client.GetObject(context.WithoutCancel(r.Context()), o.bucket, o.key, o.versionID, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
+	// Detach from the request cancellation to avoid aborting an S3 operation when
+	// the client disconnects mid-flight, but cap the total duration so a hung
+	// upstream cannot produce a zombie request.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s3OperationTimeout)
+	defer cancel()
+
+	output, err := o.client.GetObject(ctx, o.bucket, o.key, o.versionID, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
 
 	if err != nil {
 		// log with Info as it might be expected behavior (e.g. object not found).
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending request to S3")
+		log.Error("GetObject sending request to S3", "error", err)
 
+		o.incUpstreamError()
 		handleGetObjectError(w, err, requestID, o.log)
 		return
 	}
@@ -84,26 +92,38 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	if output.ContentLength != nil {
 		contentLength = *output.ContentLength
 	}
-	body, err := readBody(output.Body, contentLength)
+	body, err := readBody(output.Body, contentLength, config.MaxObjectSize)
 	if err != nil {
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject reading S3 response")
+		log.Error("GetObject reading S3 response", "error", err)
 		http.Error(w, fmt.Sprintf("failed to read response: %v", err), http.StatusInternalServerError)
 		return
 	}
 
 	plaintext := body
-	rawEncryptedDEK, ok := output.Metadata[dekTag]
+	rawEncryptedDEK, ok := output.Metadata[config.GetDekTagName()]
 	if ok {
 		encryptedDEK, err := hex.DecodeString(rawEncryptedDEK)
 		if err != nil {
-			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decoding DEK")
+			log.Error("GetObject decoding DEK", "error", err)
 			http.Error(w, "failed to decode encryption key", http.StatusInternalServerError)
 			return
 		}
 
-		plaintext, err = crypto.Decrypt(body, encryptedDEK, o.kek)
+		// Pick the KEK matching the derivation version recorded on the object. Missing
+		// tag means the object predates versioning and used the legacy SHA-256 KEK.
+		kekVersion := output.Metadata[config.GetKEKVersionTagName()]
+		kek, kekOK := o.keks.For(kekVersion)
+		if !kekOK {
+			log.Error("GetObject unknown KEK version", "kek_version", kekVersion)
+			http.Error(w, "unknown KEK version on stored object", http.StatusInternalServerError)
+			return
+		}
+
+		decryptStart := time.Now()
+		plaintext, err = cryptoutil.Decrypt(body, encryptedDEK, kek)
+		o.observeDecrypt(time.Since(decryptStart))
 		if err != nil {
-			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decrypting response")
+			log.Error("GetObject decrypting response", "error", err)
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
 			return
 		}
@@ -111,15 +131,15 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case <-r.Context().Done():
-		o.log.WithField("requestID", requestID).Info("Request was canceled by client")
+		log.Info("Request was canceled by client")
 		return
 	default:
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write(plaintext); err != nil {
 			if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
-				o.log.WithField("requestID", requestID).Info("Client closed the connection")
+				log.Info("Client closed the connection")
 			} else {
-				o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending response")
+				log.Error("GetObject sending response", "error", err)
 			}
 		}
 	}
@@ -128,19 +148,28 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 // put is a http.HandlerFunc that implements the PUT method for objects.
 func (o object) put(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.New().String()
-	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Debug("putObject")
+	log := o.log.With("request_id", requestID)
+	log.Debug("putObject", "key", o.key, "bucket", o.bucket)
 
-	ciphertext, encryptedDEK, err := crypto.Encrypt(o.data, o.kek)
+	kekVersion, kek := o.keks.Current()
+	encryptStart := time.Now()
+	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(o.data, kek)
+	o.observeEncrypt(time.Since(encryptStart))
 	if err != nil {
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject")
+		log.Error("PutObject", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	o.metadata[dekTag] = hex.EncodeToString(encryptedDEK)
+	o.metadata[config.GetDekTagName()] = hex.EncodeToString(encryptedDEK)
+	o.metadata[config.GetKEKVersionTagName()] = kekVersion
 
-	output, err := o.client.PutObject(context.WithoutCancel(r.Context()), o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s3OperationTimeout)
+	defer cancel()
+
+	output, err := o.client.PutObject(ctx, o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
 	if err != nil {
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject sending request to S3")
+		log.Error("PutObject sending request to S3", "error", err)
+		o.incUpstreamError()
 		code := parseErrorCode(err)
 		if code != 0 {
 			http.Error(w, err.Error(), code)
@@ -154,7 +183,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(nil); err != nil {
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject sending response")
+		log.Error("PutObject sending response", "error", err)
 	}
 }
 
@@ -169,18 +198,10 @@ func setPutObjectHeaders(w http.ResponseWriter, output *s3.PutObjectOutput) {
 	if output.Expiration != nil {
 		w.Header().Set("x-amz-expiration", *output.Expiration)
 	}
-	if output.ChecksumCRC32 != nil {
-		w.Header().Set("x-amz-checksum-crc32", *output.ChecksumCRC32)
-	}
-	if output.ChecksumCRC32C != nil {
-		w.Header().Set("x-amz-checksum-crc32c", *output.ChecksumCRC32C)
-	}
-	if output.ChecksumSHA1 != nil {
-		w.Header().Set("x-amz-checksum-sha1", *output.ChecksumSHA1)
-	}
-	if output.ChecksumSHA256 != nil {
-		w.Header().Set("x-amz-checksum-sha256", *output.ChecksumSHA256)
-	}
+	// Deliberately skip x-amz-checksum-* headers from the upstream PutObject response:
+	// the upstream computed those over the ciphertext the proxy uploaded, which is not
+	// the payload the downstream client sent. Forwarding them would make the client's
+	// SDK try to validate against the wrong digest.
 	if output.SSECustomerAlgorithm != nil {
 		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", *output.SSECustomerAlgorithm)
 	}
@@ -195,16 +216,16 @@ func setPutObjectHeaders(w http.ResponseWriter, output *s3.PutObjectOutput) {
 	}
 }
 
-func handleGetObjectError(w http.ResponseWriter, err error, requestID string, log *logger.Logger) {
-	log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending request to S3")
+func handleGetObjectError(w http.ResponseWriter, err error, requestID string, log *slog.Logger) {
+	log.Error("GetObject sending request to S3", "request_id", requestID, "error", err)
 	var httpResponseErr *awshttp.ResponseError
 	if errors.As(err, &httpResponseErr) {
 		code := httpResponseErr.HTTPStatusCode()
-		log.WithField("requestID", requestID).WithField("code", code).WithField("httpResponseErr", httpResponseErr).Error("GetObject sending request to S3 (awshttp.ResponseError)")
+		log.Error("GetObject sending request to S3 (awshttp.ResponseError)", "request_id", requestID, "code", code, "httpResponseErr", httpResponseErr)
 		if code != 0 {
 			var s3internalErr *s3internal.ErrorRawResponse
-			if errors.As(err, &s3internalErr) {
-				http.Error(w, s3internalErr.Error(), code)
+			if errors.As(err, &s3internalErr) && s3internalErr.RawResponse != "" {
+				http.Error(w, s3internalErr.RawResponse, code)
 			} else {
 				http.Error(w, err.Error(), code)
 			}
@@ -224,18 +245,9 @@ func setGetObjectHeaders(w http.ResponseWriter, output *s3.GetObjectOutput) {
 	if output.Expiration != nil {
 		w.Header().Set("x-amz-expiration", *output.Expiration)
 	}
-	if output.ChecksumCRC32 != nil {
-		w.Header().Set("x-amz-checksum-crc32", *output.ChecksumCRC32)
-	}
-	if output.ChecksumCRC32C != nil {
-		w.Header().Set("x-amz-checksum-crc32c", *output.ChecksumCRC32C)
-	}
-	if output.ChecksumSHA1 != nil {
-		w.Header().Set("x-amz-checksum-sha1", *output.ChecksumSHA1)
-	}
-	if output.ChecksumSHA256 != nil {
-		w.Header().Set("x-amz-checksum-sha256", *output.ChecksumSHA256)
-	}
+	// Deliberately skip x-amz-checksum-* headers from the upstream GetObject response:
+	// the proxy returns decrypted plaintext, but the upstream's checksum describes the
+	// ciphertext at rest. Forwarding it would make the client's SDK reject the body.
 	if output.SSECustomerAlgorithm != nil {
 		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", *output.SSECustomerAlgorithm)
 	}
@@ -250,18 +262,35 @@ func setGetObjectHeaders(w http.ResponseWriter, output *s3.GetObjectOutput) {
 	}
 }
 
+// parseErrorCode extracts the HTTP status code from an AWS SDK error by unwrapping
+// *awshttp.ResponseError. Returns 0 when no HTTP response is attached.
 func parseErrorCode(err error) int {
-	regex := regexp.MustCompile(`https response error StatusCode: (\d+)`)
-	matches := regex.FindStringSubmatch(err.Error())
-	if len(matches) > 1 {
-		code, err := strconv.Atoi(matches[1])
-		if err != nil {
-			return 0
-		}
-		return code
+	var httpResponseErr *awshttp.ResponseError
+	if errors.As(err, &httpResponseErr) {
+		return httpResponseErr.HTTPStatusCode()
 	}
-
 	return 0
+}
+
+func (o object) observeEncrypt(d time.Duration) {
+	if o.metrics == nil {
+		return
+	}
+	o.metrics.EncryptDuration.Observe(d.Seconds())
+}
+
+func (o object) observeDecrypt(d time.Duration) {
+	if o.metrics == nil {
+		return
+	}
+	o.metrics.DecryptDuration.Observe(d.Seconds())
+}
+
+func (o object) incUpstreamError() {
+	if o.metrics == nil {
+		return
+	}
+	o.metrics.UpstreamErrors.Inc()
 }
 
 type s3Client interface {

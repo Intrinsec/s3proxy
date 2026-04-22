@@ -1,0 +1,77 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "s3proxy.fullname" . }}
+  {{- with .Values.prometheusRule.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    {{- include "s3proxy.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ include "s3proxy.fullname" . }}
+      rules:
+        - alert: S3ProxyHighErrorRate
+          expr: |
+            sum(rate(http_requests_total{service="s3proxy",status=~"5.."}[5m]))
+              /
+            sum(rate(http_requests_total{service="s3proxy"}[5m]))
+              > {{ .Values.prometheusRule.thresholds.highErrorRate | default 0.05 }}
+          for: {{ .Values.prometheusRule.for.highErrorRate | default "10m" }}
+          labels:
+            severity: critical
+            service: s3proxy
+          annotations:
+            summary: "s3proxy error rate above threshold"
+            description: |
+              More than the configured share of HTTP responses from s3proxy
+              are 5xx over 5m. Check upstream reachability, /readyz and
+              s3proxy_upstream_errors_total.
+
+        - alert: S3ProxyHighLatency
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(http_request_duration_seconds_bucket{service="s3proxy"}[5m]))
+            ) > {{ .Values.prometheusRule.thresholds.highLatencySeconds | default 2 }}
+          for: {{ .Values.prometheusRule.for.highLatency | default "10m" }}
+          labels:
+            severity: warning
+            service: s3proxy
+          annotations:
+            summary: "s3proxy p95 latency above threshold"
+            description: |
+              The p95 HTTP latency on s3proxy has exceeded the configured
+              threshold. Inspect encrypt/decrypt duration histograms and
+              upstream S3 latency.
+
+        - alert: S3ProxyServiceDown
+          expr: up{job=~".*s3proxy.*"} == 0
+          for: {{ .Values.prometheusRule.for.serviceDown | default "2m" }}
+          labels:
+            severity: critical
+            service: s3proxy
+          annotations:
+            summary: "s3proxy instance down"
+            description: |
+              Prometheus cannot scrape {{ `{{ $labels.instance }}` }}. The
+              process is down or /metrics is unreachable.
+
+        - alert: S3ProxyHighCrashRate
+          expr: |
+            increase(service_crashes_total{service="s3proxy"}[5m])
+              > {{ .Values.prometheusRule.thresholds.crashes | default 0 }}
+          for: {{ .Values.prometheusRule.for.highCrashRate | default "5m" }}
+          labels:
+            severity: critical
+            service: s3proxy
+          annotations:
+            summary: "s3proxy recovered from handler panics"
+            description: |
+              service_crashes_total has increased in the last 5 minutes,
+              meaning the HTTP middleware recovered from at least one panic.
+              Inspect recent logs for stack traces.
+{{- end }}

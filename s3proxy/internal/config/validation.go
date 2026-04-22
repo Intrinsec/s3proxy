@@ -1,38 +1,43 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 )
 
-// ValidateConfiguration validates all required configuration at startup
-func ValidateConfiguration() error {
-	// Validate encryption key
-	encryptKey, err := GetEncryptKey()
+// Validate asserts that the required s3proxy configuration is present and well-formed.
+func (c *Config) Validate() error {
+	encryptKey, err := c.EncryptKey()
 	if err != nil {
 		return fmt.Errorf("validating encryption key: %w", err)
 	}
 	if encryptKey == "" {
-		return fmt.Errorf("encryption key cannot be empty")
+		return errors.New("encryption key cannot be empty")
 	}
 
-	// Validate host configuration
-	host, err := GetHostConfig()
+	host, err := c.Host()
 	if err != nil {
 		return fmt.Errorf("validating host configuration: %w", err)
 	}
 	if host == "" {
-		return fmt.Errorf("host configuration cannot be empty")
+		return errors.New("host configuration cannot be empty")
 	}
 
-	// Validate host format (basic check)
-	hostPattern := regexp.MustCompile(`^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 	if !hostPattern.MatchString(host) {
 		return fmt.Errorf("invalid host format: %s", host)
 	}
 
 	return nil
 }
+
+// ValidateConfiguration validates the default package-level Config. Prefer
+// (*Config).Validate in new code.
+func ValidateConfiguration() error {
+	return Default().Validate()
+}
+
+var hostPattern = regexp.MustCompile(`^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
 
 // ValidateBucketName validates S3 bucket naming rules
 func ValidateBucketName(bucket string) error {
@@ -78,10 +83,17 @@ func ValidateObjectKey(key string) error {
 	return nil
 }
 
-// MaxObjectSize defines the maximum allowed object size (5GB for S3)
+// MaxObjectSize is the S3 hard cap on a single PutObject (5 GiB).
 const MaxObjectSize = 5 * 1024 * 1024 * 1024
 
-// ValidateContentLength validates the content length of a request
+// DefaultMaxPutBodySize is the default per-request PutObject body size ceiling enforced
+// by s3proxy. Because PutObject currently buffers the full body in memory to encrypt it,
+// this cap bounds memory pressure: N concurrent uploads allocate at most N * cap bytes.
+// Operators can raise this via S3PROXY_PUTBODY_MAX (bytes) up to MaxObjectSize once a
+// streaming encryption path is introduced.
+const DefaultMaxPutBodySize = 256 * 1024 * 1024
+
+// ValidateContentLength validates the content length of a request against the S3 hard cap.
 func ValidateContentLength(contentLength int64) error {
 	if contentLength < 0 {
 		return fmt.Errorf("invalid content length: %d", contentLength)
@@ -91,5 +103,17 @@ func ValidateContentLength(contentLength int64) error {
 		return fmt.Errorf("content length %d exceeds maximum object size of %d bytes", contentLength, MaxObjectSize)
 	}
 
+	return nil
+}
+
+// ValidatePutBodySize validates the content length of a PutObject request against the
+// in-memory cap enforced by s3proxy (see GetMaxPutBodySize). A content length of 0 or
+// below is accepted here — the caller must still protect io.ReadAll against a body that
+// has no declared length.
+func ValidatePutBodySize(contentLength int64) error {
+	maxBytes := GetMaxPutBodySize()
+	if contentLength > maxBytes {
+		return fmt.Errorf("content length %d exceeds PutObject body cap of %d bytes", contentLength, maxBytes)
+	}
 	return nil
 }
