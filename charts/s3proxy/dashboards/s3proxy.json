@@ -1,0 +1,131 @@
+{
+  "title": "s3proxy",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "",
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "prometheus"},
+        "query": "label_values(http_requests_total{service=\"s3proxy\"}, instance)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "RPS per operation",
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (method, path) (rate(http_requests_total{service=\"s3proxy\", instance=~\"$instance\"}[1m]))",
+          "legendFormat": "{{method}} {{path}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Error rate (5xx share)",
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{service=\"s3proxy\", instance=~\"$instance\", status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total{service=\"s3proxy\", instance=~\"$instance\"}[5m])), 1e-12)",
+          "legendFormat": "error ratio",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "HTTP latency p50 / p95 / p99",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"s3proxy\", instance=~\"$instance\"}[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"s3proxy\", instance=~\"$instance\"}[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"s3proxy\", instance=~\"$instance\"}[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Crash rate (service_crashes_total)",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(service_crashes_total{service=\"s3proxy\", instance=~\"$instance\"}[5m])",
+          "legendFormat": "crashes/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "cps"}}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Encrypt / decrypt duration (p95)",
+      "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(s3proxy_encrypt_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "legendFormat": "encrypt p95",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(s3proxy_decrypt_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "legendFormat": "decrypt p95",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Throttling rejection rate",
+      "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "rate(s3proxy_throttled_total{instance=~\"$instance\"}[1m])",
+          "legendFormat": "throttled/s",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(s3proxy_upstream_errors_total{instance=~\"$instance\"}[1m])",
+          "legendFormat": "upstream errors/s",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "ops"}}
+    }
+  ]
+}

@@ -59,6 +59,21 @@ spec:
           - name: S3PROXY_THROTTLING_REQUESTSMAX
             value: {{ .Values.config.throttling | quote }}
           {{- end }}
+          {{- if .Values.config.otlpEndpoint }}
+          - name: OTEL_EXPORTER_OTLP_ENDPOINT
+            value: {{ .Values.config.otlpEndpoint | quote }}
+          {{- end }}
+          {{- if .Values.config.otlpTracesEndpoint }}
+          - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+            value: {{ .Values.config.otlpTracesEndpoint | quote }}
+          {{- end }}
+          {{- if .Values.config.otlpHeaders }}
+          - name: OTEL_EXPORTER_OTLP_HEADERS
+            value: {{ .Values.config.otlpHeaders | quote }}
+          {{- end }}
+          {{- with .Values.extraEnv }}
+          {{- toYaml . | nindent 10 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}
