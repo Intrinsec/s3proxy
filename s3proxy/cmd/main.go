@@ -99,6 +99,10 @@ func runServer(flags cmdFlags, log *logger.Logger) error {
 		throttler := router.NewThrottlingMiddleware(throttling, 10*time.Second)
 		// Explicitly convert h to http.Handler so it can be used with Throttle
 		hMdw = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isHealthCheckRequest(r) {
+				h.ServeHTTP(w, r)
+				return
+			}
 			throttler.Throttle(h).ServeHTTP(w, r)
 		})
 	}
@@ -129,6 +133,10 @@ func runServer(flags cmdFlags, log *logger.Logger) error {
 
 	log.Warn("TLS is disabled")
 	return server.ListenAndServe()
+}
+
+func isHealthCheckRequest(r *http.Request) bool {
+	return r.Method == http.MethodGet && (r.URL.Path == "/healthz" || r.URL.Path == "/readyz")
 }
 
 func parseFlags() (cmdFlags, error) {
