@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/hex"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,7 +20,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/cryptoutil"
-	logger "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,10 +46,8 @@ func (c *recordingS3Client) PutObject(_ context.Context, _, _, _, _, _, _, _, _,
 	return &s3.PutObjectOutput{}, nil
 }
 
-func testLogger() *logger.Logger {
-	log := logger.New()
-	log.SetOutput(io.Discard)
-	return log
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
 func TestValidateContentMD5(t *testing.T) {

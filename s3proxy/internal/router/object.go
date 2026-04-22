@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -24,7 +25,6 @@ import (
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	s3internal "github.com/intrinsec/s3proxy/internal/s3"
-	logger "github.com/sirupsen/logrus"
 )
 
 // s3OperationTimeout bounds the total duration of an individual S3 GetObject/PutObject call.
@@ -51,14 +51,15 @@ type object struct {
 	sseCustomerKey            string
 	sseCustomerKeyMD5         string
 	versionID                 string
-	log                       *logger.Logger
+	log                       *slog.Logger
 }
 
 // get is a http.HandlerFunc that implements the GET method for objects.
 func (o object) get(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.New().String()
+	log := o.log.With("request_id", requestID)
 
-	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Debug("getObject")
+	log.Debug("getObject", "key", o.key, "bucket", o.bucket)
 
 	// Detach from the request cancellation to avoid aborting an S3 operation when
 	// the client disconnects mid-flight, but cap the total duration so a hung
@@ -70,7 +71,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil {
 		// log with Info as it might be expected behavior (e.g. object not found).
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending request to S3")
+		log.Error("GetObject sending request to S3", "error", err)
 
 		handleGetObjectError(w, err, requestID, o.log)
 		return
@@ -90,7 +91,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	}
 	body, err := readBody(output.Body, contentLength, config.MaxObjectSize)
 	if err != nil {
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject reading S3 response")
+		log.Error("GetObject reading S3 response", "error", err)
 		http.Error(w, fmt.Sprintf("failed to read response: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -100,7 +101,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	if ok {
 		encryptedDEK, err := hex.DecodeString(rawEncryptedDEK)
 		if err != nil {
-			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decoding DEK")
+			log.Error("GetObject decoding DEK", "error", err)
 			http.Error(w, "failed to decode encryption key", http.StatusInternalServerError)
 			return
 		}
@@ -110,14 +111,14 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		kekVersion := output.Metadata[config.GetKEKVersionTagName()]
 		kek, kekOK := o.keks.For(kekVersion)
 		if !kekOK {
-			o.log.WithField("requestID", requestID).WithField("kek_version", kekVersion).Error("GetObject unknown KEK version")
+			log.Error("GetObject unknown KEK version", "kek_version", kekVersion)
 			http.Error(w, "unknown KEK version on stored object", http.StatusInternalServerError)
 			return
 		}
 
 		plaintext, err = cryptoutil.Decrypt(body, encryptedDEK, kek)
 		if err != nil {
-			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decrypting response")
+			log.Error("GetObject decrypting response", "error", err)
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
 			return
 		}
@@ -125,15 +126,15 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case <-r.Context().Done():
-		o.log.WithField("requestID", requestID).Info("Request was canceled by client")
+		log.Info("Request was canceled by client")
 		return
 	default:
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write(plaintext); err != nil {
 			if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
-				o.log.WithField("requestID", requestID).Info("Client closed the connection")
+				log.Info("Client closed the connection")
 			} else {
-				o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending response")
+				log.Error("GetObject sending response", "error", err)
 			}
 		}
 	}
@@ -142,12 +143,13 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 // put is a http.HandlerFunc that implements the PUT method for objects.
 func (o object) put(w http.ResponseWriter, r *http.Request) {
 	requestID := uuid.New().String()
-	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Debug("putObject")
+	log := o.log.With("request_id", requestID)
+	log.Debug("putObject", "key", o.key, "bucket", o.bucket)
 
 	kekVersion, kek := o.keks.Current()
 	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(o.data, kek)
 	if err != nil {
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject")
+		log.Error("PutObject", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -159,7 +161,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 
 	output, err := o.client.PutObject(ctx, o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
 	if err != nil {
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject sending request to S3")
+		log.Error("PutObject sending request to S3", "error", err)
 		code := parseErrorCode(err)
 		if code != 0 {
 			http.Error(w, err.Error(), code)
@@ -173,7 +175,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(nil); err != nil {
-		o.log.WithField("requestID", requestID).WithField("error", err).Error("PutObject sending response")
+		log.Error("PutObject sending response", "error", err)
 	}
 }
 
@@ -214,12 +216,12 @@ func setPutObjectHeaders(w http.ResponseWriter, output *s3.PutObjectOutput) {
 	}
 }
 
-func handleGetObjectError(w http.ResponseWriter, err error, requestID string, log *logger.Logger) {
-	log.WithField("requestID", requestID).WithField("error", err).Error("GetObject sending request to S3")
+func handleGetObjectError(w http.ResponseWriter, err error, requestID string, log *slog.Logger) {
+	log.Error("GetObject sending request to S3", "request_id", requestID, "error", err)
 	var httpResponseErr *awshttp.ResponseError
 	if errors.As(err, &httpResponseErr) {
 		code := httpResponseErr.HTTPStatusCode()
-		log.WithField("requestID", requestID).WithField("code", code).WithField("httpResponseErr", httpResponseErr).Error("GetObject sending request to S3 (awshttp.ResponseError)")
+		log.Error("GetObject sending request to S3 (awshttp.ResponseError)", "request_id", requestID, "code", code, "httpResponseErr", httpResponseErr)
 		if code != 0 {
 			var s3internalErr *s3internal.ErrorRawResponse
 			if errors.As(err, &s3internalErr) && s3internalErr.RawResponse != "" {

@@ -15,13 +15,14 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/router"
-	logger "github.com/sirupsen/logrus"
 )
 
 const (
@@ -37,29 +38,32 @@ const (
 	defaultLogLevel = 0
 )
 
+// logLevelVar controls the minimum log level at runtime.
+var logLevelVar = new(slog.LevelVar)
+
 func main() {
-	log := logger.New()
+	log := newLogger()
 
 	flags, err := parseFlags()
 	if err != nil {
-		log.WithError(err).Fatal("parsing flags")
+		fatal(log, "parsing flags", err)
 	}
 
-	setLogLevel(log, flags.logLevel)
+	setLogLevel(flags.logLevel)
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.WithError(err).Fatal("loading configuration")
+		fatal(log, "loading configuration", err)
 	}
 
 	if err := cfg.Validate(); err != nil {
-		log.WithError(err).Fatal("configuration validation failed")
+		fatal(log, "configuration validation failed", err)
 	}
 
 	// Keep the default global Config populated for legacy call sites during the
 	// transition to DI-based access.
 	if err := config.LoadConfig(); err != nil {
-		log.WithError(err).Fatal("populating default config")
+		fatal(log, "populating default config", err)
 	}
 
 	if flags.forwardMultipartReqs {
@@ -67,25 +71,36 @@ func main() {
 	}
 
 	if err := runServer(flags, cfg, log); err != nil {
-		log.WithError(err).Fatal("running server")
+		fatal(log, "running server", err)
 	}
 }
 
-func setLogLevel(log *logger.Logger, level int) {
+// newLogger builds a JSON slog.Logger writing to stdout with a common service attribute.
+func newLogger() *slog.Logger {
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevelVar})
+	return slog.New(handler).With("service", "s3proxy")
+}
+
+func fatal(log *slog.Logger, msg string, err error) {
+	log.Error(msg, "error", err)
+	os.Exit(1)
+}
+
+func setLogLevel(level int) {
 	switch {
 	case level <= -1:
-		log.SetLevel(logger.DebugLevel)
+		logLevelVar.Set(slog.LevelDebug)
 	case level == 1:
-		log.SetLevel(logger.WarnLevel)
+		logLevelVar.Set(slog.LevelWarn)
 	case level >= 2:
-		log.SetLevel(logger.ErrorLevel)
+		logLevelVar.Set(slog.LevelError)
 	default:
-		log.SetLevel(logger.InfoLevel)
+		logLevelVar.Set(slog.LevelInfo)
 	}
 }
 
-func runServer(flags cmdFlags, cfg *config.Config, log *logger.Logger) error {
-	log.WithField("ip", flags.ip).WithField("port", defaultPort).WithField("region", flags.region).Info("listening")
+func runServer(flags cmdFlags, cfg *config.Config, log *slog.Logger) error {
+	log.Info("listening", "ip", flags.ip, "port", defaultPort, "region", flags.region)
 
 	routerInstance, err := router.New(context.Background(), flags.region, flags.forwardMultipartReqs, log)
 	if err != nil {
@@ -97,7 +112,7 @@ func runServer(flags cmdFlags, cfg *config.Config, log *logger.Logger) error {
 
 	throttling := cfg.ThrottlingRequestsMax()
 	if throttling != 0 {
-		log.WithField("throttling_requestsmax", throttling).Info("Throttling is enable")
+		log.Info("Throttling is enable", "throttling_requestsmax", throttling)
 		throttler := router.NewThrottlingMiddleware(throttling, 10*time.Second)
 		// Explicitly convert h to http.Handler so it can be used with Throttle
 		hMdw = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

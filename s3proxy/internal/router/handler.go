@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -20,12 +21,11 @@ import (
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	"github.com/intrinsec/s3proxy/internal/s3"
-	logger "github.com/sirupsen/logrus"
 )
 
-func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *logger.Logger) http.HandlerFunc {
+func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
+		log.Debug("intercepting", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 		if req.Header.Get("Range") != "" {
 			log.Error("GetObject Range header unsupported")
 			http.Error(w, "s3proxy currently does not support Range headers", http.StatusNotImplemented)
@@ -53,18 +53,18 @@ func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil
 	}
 }
 
-func handlePutObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *logger.Logger) http.HandlerFunc {
+func handlePutObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
+		log.Debug("intercepting", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 
 		body, err := readBody(req.Body, req.ContentLength, config.GetMaxPutBodySize())
 		if err != nil {
 			if errors.Is(err, errBodyTooLarge) {
-				log.WithField("error", err).Warn("PutObject body too large")
+				log.Warn("PutObject body too large", "error", err)
 				http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 				return
 			}
-			log.WithField("error", err).Error("PutObject reading body")
+			log.Error("PutObject reading body", "error", err)
 			http.Error(w, "failed to read request body", http.StatusInternalServerError)
 			return
 		}
@@ -79,12 +79,12 @@ func handlePutObject(client s3Client, key string, bucket string, keks cryptoutil
 		// Thus we have to check incoming requets for matching content digests.
 		// UNSIGNED-PAYLOAD can be used to disabled payload signing. In that case we don't check the content digest.
 		if clientDigest != "" && clientDigest != "UNSIGNED-PAYLOAD" && clientDigest != serverDigest {
-			log.WithField("error", "x-amz-content-sha256 mismatch").Debug("PutObject")
+			log.Debug("PutObject", "error", "x-amz-content-sha256 mismatch")
 			// The S3 API responds with an XML formatted error message.
 			mismatchErr := NewContentSHA256MismatchError(clientDigest, serverDigest)
 			marshalled, err := xml.Marshal(mismatchErr)
 			if err != nil {
-				log.WithField("error", err).Error("PutObject")
+				log.Error("PutObject", "error", err)
 				http.Error(w, fmt.Sprintf("marshalling error: %s", err.Error()), http.StatusInternalServerError)
 				return
 			}
@@ -98,14 +98,14 @@ func handlePutObject(client s3Client, key string, bucket string, keks cryptoutil
 		raw := req.Header.Get("x-amz-object-lock-retain-until-date")
 		retentionTime, err := parseRetentionTime(raw)
 		if err != nil {
-			log.WithField("data", raw).WithField("error", err).Error("parsing lock retention time")
+			log.Error("parsing lock retention time", "data", raw, "error", err)
 			http.Error(w, fmt.Sprintf("parsing x-amz-object-lock-retain-until-date: %s", err.Error()), http.StatusInternalServerError)
 			return
 		}
 
 		err = validateContentMD5(req.Header.Get("content-md5"), body)
 		if err != nil {
-			log.WithField("error", err).Error("validating content md5")
+			log.Error("validating content md5", "error", err)
 			http.Error(w, fmt.Sprintf("validating content md5: %s", err.Error()), http.StatusBadRequest)
 			return
 		}
@@ -133,13 +133,13 @@ func handlePutObject(client s3Client, key string, bucket string, keks cryptoutil
 	}
 }
 
-func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
+func handleForwards(client *s3.Client, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("forwarding")
+		log.Debug("forwarding", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 
 		newReq, err := repackage(req)
 		if err != nil {
-			log.WithField("error", err).Error("failed to repackage request")
+			log.Error("failed to repackage request", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -148,7 +148,7 @@ func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 
 		creds, err := cfg.Credentials.Retrieve(context.TODO())
 		if err != nil {
-			log.WithField("error", err).Error("unable to retrieve aws creds")
+			log.Error("unable to retrieve aws creds", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -157,20 +157,20 @@ func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 
 		err = signer.SignHTTP(context.TODO(), creds, newReq, newReq.Header.Get("X-Amz-Content-Sha256"), "s3", cfg.Region, time.Now())
 		if err != nil {
-			log.WithField("error", err).Error("failed to sign request")
+			log.Error("failed to sign request", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 
 		resp, err := forwardHTTPClient.Do(newReq)
 		if err != nil {
-			log.WithField("error", err).Error("do request")
+			log.Error("do request", "error", err)
 			http.Error(w, "do request: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		defer func() {
 			if cerr := resp.Body.Close(); cerr != nil {
-				log.WithError(cerr).Error("failed to close upstream response body")
+				log.Error("failed to close upstream response body", "error", cerr)
 			}
 		}()
 
@@ -181,7 +181,7 @@ func handleForwards(client *s3.Client, log *logger.Logger) http.HandlerFunc {
 		w.WriteHeader(resp.StatusCode)
 
 		if _, err := io.Copy(w, resp.Body); err != nil {
-			log.WithField("error", err).Error("failed to stream response")
+			log.Error("failed to stream response", "error", err)
 			// Headers already written; cannot send error response.
 		}
 	}
@@ -199,9 +199,9 @@ var forwardHTTPClient = &http.Client{
 }
 
 // handleCreateMultipartUpload logs the request and blocks with an error message.
-func handleCreateMultipartUpload(log *logger.Logger) http.HandlerFunc {
+func handleCreateMultipartUpload(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting CreateMultipartUpload")
+		log.Debug("intercepting CreateMultipartUpload", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 
 		log.Error("Blocking CreateMultipartUpload request")
 		http.Error(w, "s3proxy is configured to block CreateMultipartUpload requests", http.StatusNotImplemented)
@@ -209,9 +209,9 @@ func handleCreateMultipartUpload(log *logger.Logger) http.HandlerFunc {
 }
 
 // handleUploadPart logs the request and blocks with an error message.
-func handleUploadPart(log *logger.Logger) http.HandlerFunc {
+func handleUploadPart(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting UploadPart")
+		log.Debug("intercepting UploadPart", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 
 		log.Error("Blocking UploadPart request")
 		http.Error(w, "s3proxy is configured to block UploadPart requests", http.StatusNotImplemented)
@@ -219,9 +219,9 @@ func handleUploadPart(log *logger.Logger) http.HandlerFunc {
 }
 
 // handleCompleteMultipartUpload logs the request and blocks with an error message.
-func handleCompleteMultipartUpload(log *logger.Logger) http.HandlerFunc {
+func handleCompleteMultipartUpload(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting CompleteMultipartUpload")
+		log.Debug("intercepting CompleteMultipartUpload", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 
 		log.Error("Blocking CompleteMultipartUpload request")
 		http.Error(w, "s3proxy is configured to block CompleteMultipartUpload requests", http.StatusNotImplemented)
@@ -229,9 +229,9 @@ func handleCompleteMultipartUpload(log *logger.Logger) http.HandlerFunc {
 }
 
 // handleAbortMultipartUpload logs the request and blocks with an error message.
-func handleAbortMultipartUpload(log *logger.Logger) http.HandlerFunc {
+func handleAbortMultipartUpload(log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting AbortMultipartUpload")
+		log.Debug("intercepting AbortMultipartUpload", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 
 		log.Error("Blocking AbortMultipartUpload request")
 		http.Error(w, "s3proxy is configured to block AbortMultipartUpload requests", http.StatusNotImplemented)

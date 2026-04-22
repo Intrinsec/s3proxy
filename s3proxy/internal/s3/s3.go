@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -26,7 +27,6 @@ import (
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	configs3proxy "github.com/intrinsec/s3proxy/internal/config"
-	logger "github.com/sirupsen/logrus"
 )
 
 // Client is a wrapper around the AWS S3 client.
@@ -72,7 +72,7 @@ func readBody(body io.Reader, contentLength int64) ([]byte, error) {
 }
 
 // Middleware to capture error response bodies without cloning successful object bodies.
-func addCaptureRawResponseDeserializeMiddleware(log *logger.Logger) func(*middleware.Stack) error {
+func addCaptureRawResponseDeserializeMiddleware(log *slog.Logger) func(*middleware.Stack) error {
 	return func(stack *middleware.Stack) error {
 		return stack.Deserialize.Add(middleware.DeserializeMiddlewareFunc("CaptureRawResponseDeserialize", func(
 			ctx context.Context, in middleware.DeserializeInput, next middleware.DeserializeHandler,
@@ -87,7 +87,7 @@ func addCaptureRawResponseDeserializeMiddleware(log *logger.Logger) func(*middle
 
 				bodyBytes, err := readBody(resp.Body, resp.ContentLength)
 				if err != nil {
-					log.WithError(err).Error("failed to read response body")
+					log.Error("failed to read response body", "error", err)
 					return out, metadata, fmt.Errorf("reading response body: %w", err)
 				}
 
@@ -129,7 +129,7 @@ func addCaptureRawResponseInitializeMiddleware() func(*middleware.Stack) error {
 // NewClient creates a new AWS S3 client. The provided context is used only for HTTP
 // requests made during client construction (credentials discovery, etc.); it does not
 // bound subsequent request lifetimes. Client construction happens once during proxy setup.
-func NewClient(ctx context.Context, region string, log *logger.Logger) (*Client, error) {
+func NewClient(ctx context.Context, region string, log *slog.Logger) (*Client, error) {
 	clientCfg, err := config.LoadDefaultConfig(
 		ctx,
 		config.WithRegion(region),

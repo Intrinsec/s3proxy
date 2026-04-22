@@ -28,6 +28,7 @@ import (
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -37,7 +38,6 @@ import (
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	"github.com/intrinsec/s3proxy/internal/s3"
-	logger "github.com/sirupsen/logrus"
 )
 
 var (
@@ -55,13 +55,13 @@ type Router struct {
 	// s3proxy does not implement those yet.
 	// Setting forwardMultipartReqs to true will forward those requests to the S3 API, otherwise we block them (secure defaults).
 	forwardMultipartReqs bool
-	log                  *logger.Logger
+	log                  *slog.Logger
 }
 
 // New creates a new Router. The S3 client is built once here and reused for every
 // incoming request — the AWS SDK client is safe for concurrent use and maintains
 // its own HTTP connection pool and credentials cache.
-func New(ctx context.Context, region string, forwardMultipartReqs bool, log *logger.Logger) (Router, error) {
+func New(ctx context.Context, region string, forwardMultipartReqs bool, log *slog.Logger) (Router, error) {
 	seed, err := config.GetEncryptKey()
 	if err != nil {
 		return Router{}, fmt.Errorf("getting encryption key: %w", err)
@@ -102,12 +102,12 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 	// Validate bucket and key if we have a matching path
 	if matchingPath {
 		if err := config.ValidateBucketName(bucket); err != nil {
-			r.log.WithError(err).WithField("bucket", bucket).Warn("invalid bucket name")
+			r.log.Warn("invalid bucket name", "error", err, "bucket", bucket)
 			http.Error(w, fmt.Sprintf("invalid bucket name: %s", err.Error()), http.StatusBadRequest)
 			return
 		}
 		if err := config.ValidateObjectKey(key); err != nil {
-			r.log.WithError(err).WithField("key", key).Warn("invalid object key")
+			r.log.Warn("invalid object key", "error", err, "key", key)
 			http.Error(w, fmt.Sprintf("invalid object key: %s", err.Error()), http.StatusBadRequest)
 			return
 		}
@@ -117,12 +117,12 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 	// in-memory PutObject body cap enforced by s3proxy.
 	if req.Method == http.MethodPut && req.ContentLength > 0 {
 		if err := config.ValidateContentLength(req.ContentLength); err != nil {
-			r.log.WithError(err).WithField("content_length", req.ContentLength).Warn("invalid content length")
+			r.log.Warn("invalid content length", "error", err, "content_length", req.ContentLength)
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
 		if err := config.ValidatePutBodySize(req.ContentLength); err != nil {
-			r.log.WithError(err).WithField("content_length", req.ContentLength).Warn("put body too large")
+			r.log.Warn("put body too large", "error", err, "content_length", req.ContentLength)
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
@@ -450,7 +450,7 @@ func (r Router) serveReadyz(w http.ResponseWriter, req *http.Request) {
 	defer cancel()
 
 	if err := r.client.Ping(ctx); err != nil {
-		r.log.WithError(err).Warn("readiness probe failed")
+		r.log.Warn("readiness probe failed", "error", err)
 		writeHealthResponse(w, http.StatusServiceUnavailable, "upstream unreachable", r.log)
 		return
 	}
@@ -458,9 +458,9 @@ func (r Router) serveReadyz(w http.ResponseWriter, req *http.Request) {
 	writeHealthResponse(w, http.StatusOK, "ok", r.log)
 }
 
-func writeHealthResponse(w http.ResponseWriter, status int, body string, log *logger.Logger) {
+func writeHealthResponse(w http.ResponseWriter, status int, body string, log *slog.Logger) {
 	w.WriteHeader(status)
 	if _, err := w.Write([]byte(body)); err != nil {
-		log.WithError(err).Error("failed to write health check response")
+		log.Error("failed to write health check response", "error", err)
 	}
 }
