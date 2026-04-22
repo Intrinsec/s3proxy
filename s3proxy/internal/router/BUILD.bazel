@@ -22,5 +22,10 @@ go_test(
     name = "router_test",
     srcs = ["router_test.go"],
     embed = [":router"],
-    deps = ["@com_github_stretchr_testify//assert"],
+    deps = [
+        "//s3proxy/internal/crypto",
+        "@com_github_sirupsen_logrus//:logrus",
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
 )

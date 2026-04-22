@@ -6,13 +6,50 @@ SPDX-License-Identifier: AGPL-3.0-only
 package router
 
 import (
+	"bytes"
+	"context"
+	"encoding/hex"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/intrinsec/s3proxy/internal/crypto"
+	logger "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type recordingS3Client struct {
+	body         []byte
+	metadata     map[string]string
+	getObjectOut *s3.GetObjectOutput
+}
+
+func (c *recordingS3Client) GetObject(context.Context, string, string, string, string, string, string) (*s3.GetObjectOutput, error) {
+	if c.getObjectOut != nil {
+		return c.getObjectOut, nil
+	}
+	return &s3.GetObjectOutput{}, nil
+}
+
+func (c *recordingS3Client) PutObject(_ context.Context, _, _, _, _, _, _, _, _, _ string, _ time.Time, metadata map[string]string, body []byte) (*s3.PutObjectOutput, error) {
+	c.body = append([]byte(nil), body...)
+	c.metadata = make(map[string]string, len(metadata))
+	for key, value := range metadata {
+		c.metadata[key] = value
+	}
+	return &s3.PutObjectOutput{}, nil
+}
+
+func testLogger() *logger.Logger {
+	log := logger.New()
+	log.SetOutput(io.Discard)
+	return log
+}
 
 func TestValidateContentMD5(t *testing.T) {
 	tests := map[string]struct {
@@ -108,4 +145,74 @@ func TestReadBodyReturnsErrorOnShortBody(t *testing.T) {
 	_, err := readBody(strings.NewReader("hi"), 5)
 
 	assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
+}
+
+func TestPutObjectUsesRouterKEK(t *testing.T) {
+	expectedKEK := generateKEKFromString("expected encryption key")
+	client := &recordingS3Client{}
+	router := Router{kek: expectedKEK, log: testLogger()}
+	req := httptest.NewRequest(http.MethodPut, "/bucket/key", bytes.NewReader([]byte("secret payload")))
+	rec := httptest.NewRecorder()
+
+	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	rawEncryptedDEK, ok := client.metadata[dekTag]
+	require.True(t, ok)
+	encryptedDEK, err := hex.DecodeString(rawEncryptedDEK)
+	require.NoError(t, err)
+	plaintext, err := crypto.Decrypt(client.body, encryptedDEK, expectedKEK)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("secret payload"), plaintext)
+
+	_, err = crypto.Decrypt(client.body, encryptedDEK, [32]byte{})
+	assert.Error(t, err)
+}
+
+func TestGetObjectUsesRouterKEK(t *testing.T) {
+	expectedKEK := generateKEKFromString("expected encryption key")
+	client := newEncryptedGetObjectClient(t, expectedKEK, []byte("secret payload"))
+	router := Router{kek: expectedKEK, log: testLogger()}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "secret payload", rec.Body.String())
+}
+
+func TestGetObjectFailsWithWrongRouterKEK(t *testing.T) {
+	storedObjectKEK := generateKEKFromString("old encryption key")
+	routerKEK := generateKEKFromString("new encryption key")
+	client := newEncryptedGetObjectClient(t, storedObjectKEK, []byte("secret payload"))
+	router := Router{kek: routerKEK, log: testLogger()}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	assert.Contains(t, rec.Body.String(), "failed to decrypt object")
+}
+
+func newEncryptedGetObjectClient(t *testing.T, kek [32]byte, plaintext []byte) *recordingS3Client {
+	t.Helper()
+
+	ciphertext, encryptedDEK, err := crypto.Encrypt(plaintext, kek)
+	require.NoError(t, err)
+
+	return &recordingS3Client{
+		getObjectOut: &s3.GetObjectOutput{
+			Body:          io.NopCloser(bytes.NewReader(ciphertext)),
+			ContentLength: awsInt64(int64(len(ciphertext))),
+			Metadata: map[string]string{
+				dekTag: hex.EncodeToString(encryptedDEK),
+			},
+		},
+	}
+}
+
+func awsInt64(v int64) *int64 {
+	return &v
 }
