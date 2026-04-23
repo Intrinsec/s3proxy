@@ -368,7 +368,7 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 	switch req.Method {
 	case http.MethodGet:
 		if !isUnwantedGetEndpoint(req.URL.Query()) {
-			return handleGetObject(client, key, bucket, r.kek, r.log)
+			return handleGetObject(client, key, bucket, r.kek, config.GetDecryptionFallbackEnabled(), r.log)
 		}
 	case http.MethodPut:
 		if !isUnwantedPutEndpoint(req.Header, req.URL.Query()) {

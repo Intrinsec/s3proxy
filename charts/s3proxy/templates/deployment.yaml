@@ -8,6 +8,8 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  strategy:
+    {{- toYaml .Values.deploymentStrategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "s3proxy.selectorLabels" . | nindent 6 }}
@@ -58,6 +60,9 @@ spec:
           {{- if .Values.config.throttling }}
           - name: S3PROXY_THROTTLING_REQUESTSMAX
             value: {{ .Values.config.throttling | quote }}
+          {{- end }}
+          {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 10 }}
           {{- end }}
           ports:
             - name: http
