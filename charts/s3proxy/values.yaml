@@ -1,5 +1,11 @@
 replicaCount: 1
 
+deploymentStrategy:
+  type: RollingUpdate
+  # rollingUpdate:
+  #   maxUnavailable: 25%
+  #   maxSurge: 25%
+
 image:
   repository: ghcr.io/intrinsec/s3proxy
   pullPolicy: Always
@@ -32,6 +38,10 @@ valsSecret: {}
 
 podAnnotations: {}
 podLabels: {}
+
+extraEnv: []
+# - name: S3PROXY_DECRYPTION_FALLBACK
+#   value: "true"
 
 podSecurityContext: {}
   # fsGroup: 2000

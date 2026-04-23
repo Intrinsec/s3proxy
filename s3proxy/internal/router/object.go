@@ -38,6 +38,7 @@ var (
 // object bundles data to implement http.Handler methods that use data from incoming requests.
 type object struct {
 	kek                       [32]byte
+	decryptionFallback        bool
 	client                    s3Client
 	key                       string
 	bucket                    string
@@ -101,7 +102,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		plaintext, err = crypto.Decrypt(body, encryptedDEK, o.kek)
+		plaintext, err = o.decryptObject(body, encryptedDEK, requestID)
 		if err != nil {
 			o.log.WithField("requestID", requestID).WithField("error", err).Error("GetObject decrypting response")
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
@@ -123,6 +124,22 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (o object) decryptObject(ciphertext, encryptedDEK []byte, requestID string) ([]byte, error) {
+	plaintext, err := crypto.Decrypt(ciphertext, encryptedDEK, o.kek)
+	if err == nil || !o.decryptionFallback {
+		return plaintext, err
+	}
+
+	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).WithField("error", err).Warn("primary KEK failed, retrying decryption fallback")
+	plaintext, fallbackErr := crypto.Decrypt(ciphertext, encryptedDEK, [32]byte{})
+	if fallbackErr != nil {
+		return nil, err
+	}
+
+	o.log.WithField("requestID", requestID).WithField("key", o.key).WithField("bucket", o.bucket).Warn("object decrypted using fallback key path")
+	return plaintext, nil
 }
 
 // put is a http.HandlerFunc that implements the PUT method for objects.

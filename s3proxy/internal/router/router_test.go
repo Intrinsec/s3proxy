@@ -196,6 +196,26 @@ func TestGetObjectFailsWithWrongRouterKEK(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "failed to decrypt object")
 }
 
+func TestGetObjectUsesDecryptionFallback(t *testing.T) {
+	routerKEK := generateKEKFromString("configured encryption key")
+	client := newEncryptedGetObjectClient(t, [32]byte{}, []byte("secret payload"))
+	obj := object{
+		kek:                routerKEK,
+		decryptionFallback: true,
+		client:             client,
+		key:                "key",
+		bucket:             "bucket",
+		log:                testLogger(),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	obj.get(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "secret payload", rec.Body.String())
+}
+
 func newEncryptedGetObjectClient(t *testing.T, kek [32]byte, plaintext []byte) *recordingS3Client {
 	t.Helper()
 

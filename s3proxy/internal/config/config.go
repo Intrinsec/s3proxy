@@ -44,3 +44,7 @@ func GetEncryptKey() (string, error) {
 func GetThrottlingRequestsMax() int {
 	return k.Int("s3proxy.throttling.requestsmax")
 }
+
+func GetDecryptionFallbackEnabled() bool {
+	return k.Bool("s3proxy.decryption.fallback")
+}

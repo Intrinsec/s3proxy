@@ -20,7 +20,7 @@ import (
 	logger "github.com/sirupsen/logrus"
 )
 
-func handleGetObject(client s3Client, key string, bucket string, kek [32]byte, log *logger.Logger) http.HandlerFunc {
+func handleGetObject(client s3Client, key string, bucket string, kek [32]byte, decryptionFallback bool, log *logger.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.WithField("path", req.URL.Path).WithField("method", req.Method).WithField("host", req.Host).Debug("intercepting")
 		if req.Header.Get("Range") != "" {
@@ -35,16 +35,19 @@ func handleGetObject(client s3Client, key string, bucket string, kek [32]byte, l
 		}
 
 		obj := object{
-			kek:                  kek,
-			client:               client,
-			key:                  key,
-			bucket:               bucket,
-			query:                req.URL.Query(),
-			versionID:            versionID,
-			sseCustomerAlgorithm: req.Header.Get("x-amz-server-side-encryption-customer-algorithm"),
-			sseCustomerKey:       req.Header.Get("x-amz-server-side-encryption-customer-key"),
-			sseCustomerKeyMD5:    req.Header.Get("x-amz-server-side-encryption-customer-key-MD5"),
-			log:                  log,
+			kek:                kek,
+			decryptionFallback: decryptionFallback,
+			client:             client,
+			key:                key,
+			bucket:             bucket,
+			query:              req.URL.Query(),
+			versionID:          versionID,
+			sseCustomerAlgorithm: req.Header.Get(
+				"x-amz-server-side-encryption-customer-algorithm",
+			),
+			sseCustomerKey:    req.Header.Get("x-amz-server-side-encryption-customer-key"),
+			sseCustomerKeyMD5: req.Header.Get("x-amz-server-side-encryption-customer-key-MD5"),
+			log:               log,
 		}
 		get(obj.get)(w, req)
 	}
