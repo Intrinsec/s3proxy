@@ -10,8 +10,13 @@ Tier: **C (shared, critical)**.
 
 ## Language
 
-All code comments, documentation, commit messages, ADRs, and inline doc strings must be written
-in English, regardless of the team's spoken language.
+Default agent responses must be in English, even when the user writes in French.
+Respond in French only when the user explicitly requests a French response.
+Prefer terse Caveman-style responses when Caveman is available, while preserving technical clarity.
+
+HARD RULE: all code, code comments, identifiers, inline doc strings, commit messages,
+ADRs, and technical documentation must be written in English for every project type,
+regardless of the team's spoken language.
 User-facing strings and UI copy are exempt — use the appropriate language for the audience.
 
 ## Code Quality
