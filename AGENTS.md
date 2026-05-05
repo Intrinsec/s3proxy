@@ -10,90 +10,93 @@ Tier: **C (shared, critical)**.
 
 ## Language
 
-Default agent responses must be in English, even when the user writes in French.
-Respond in French only when the user explicitly requests a French response.
+Default agent response: English, even if user writes French.
+French response only when user explicitly asks French.
 
-Caveman compression is **mandatory** for all conversational responses (default level: `full`).
-Code blocks, commit messages, PR descriptions, security warnings, and irreversible-action
-confirmations remain in normal prose (per Caveman's auto-clarity rules). Do not disable
-Caveman unless the user explicitly says "stop caveman" or "normal mode".
+Caveman compression **mandatory** for all conversational responses (default level: `full`).
+Code blocks, commit messages, PR descriptions, security warnings, irreversible-action
+confirmations stay normal prose (Caveman auto-clarity rules). Do not disable Caveman unless
+user says "stop caveman" or "normal mode".
 
-HARD RULE: all code, code comments, identifiers, inline doc strings, commit messages,
-ADRs, and technical documentation must be written in English for every project type,
-regardless of the team's spoken language.
-User-facing strings and UI copy are exempt — use the appropriate language for the audience.
+HARD RULE: all code, comments, identifiers, doc strings, commit messages, ADRs, technical
+docs in English — every project type, regardless of team spoken language.
+User-facing strings + UI copy exempt — match audience language.
 
 ## Workflow Skills (mandatory)
 
-Every agent session in this repository must load and apply these skill packs:
+Every agent session in this repo must load + apply these skill packs:
 
 - **superpowers** — process discipline (`brainstorming`, `writing-plans`, `executing-plans`,
   `test-driven-development`, `systematic-debugging`, `verification-before-completion`,
   `requesting-code-review`).
-- **caveman** — response-compression style (see Language section).
+- **caveman** — response compression (see Language section).
 
-If either pack is missing, install per the iagen-dev `INSTALL.md` before starting work.
+Pack missing? Install per iagen-dev `INSTALL.md` before work.
 
-### Plan-writing is mandatory before non-trivial implementation
+### Session start gate
 
-For any feature, refactor, or bugfix that touches more than a single function or that
-the agent cannot fully reason about in one pass:
+Before any response, clarification, repository inspection, shell command, or file edit:
+run `superpowers:using-superpowers` first, then run `caveman` so compression is active
+for every response. Use `superpowers:using-superpowers` to decide which additional
+skills apply, then follow the selected skill workflows.
 
-1. Run the `superpowers:brainstorming` skill to clarify intent and requirements.
-2. Run `superpowers:writing-plans` and persist the plan under
-   `docs/superpowers/plans/<short-name>.md` (committed to git).
+### Plan-writing mandatory before non-trivial implementation
+
+Any feature, refactor, bugfix touching more than one function, or agent cannot reason in
+one pass:
+
+1. Run `superpowers:brainstorming` — clarify intent + requirements.
+2. Run `superpowers:writing-plans` — persist plan at `docs/superpowers/plans/<short-name>.md`
+   (commit to git).
 3. Execute via `superpowers:executing-plans` (single-session) or
    `superpowers:subagent-driven-development` (parallelisable steps).
 4. Gate completion with `superpowers:verification-before-completion` — no "done" claim
    without evidence (test output, lint output, build output).
 
-**Trivial edits exception:** typos, single-line config tweaks, and self-evident
-one-liners may skip steps 1–3 but must still verify before claiming done.
+**Trivial edits exception:** typos, single-line config tweaks, self-evident one-liners
+skip steps 1–3 but still verify before claiming done.
 
 ### Bug fixes go through systematic-debugging
 
-Any bug, failing test, or unexpected behaviour triggers `superpowers:systematic-debugging`
-before proposing a fix. Do not patch symptoms without identifying the root cause.
+Any bug, failing test, unexpected behaviour → `superpowers:systematic-debugging` first.
+No symptom patching without root cause.
 
 ### Code review before merge
 
-Before merging or opening a PR for non-trivial work, run `superpowers:requesting-code-review`.
+Before merge or PR for non-trivial work: run `superpowers:requesting-code-review`.
 
 ## Code Quality
 
-After modifying any Go file, run `golangci-lint run ./...` before marking work complete.
-Fix all lint errors and re-run until the linter exits clean.
-Do not consider a task done while lint errors remain.
-`gofmt` formatting is non-negotiable — zero diff allowed. Run `gofmt -w .` if in doubt.
+After modifying any Go file: run `golangci-lint run ./...` before marking work complete.
+Fix all lint errors, re-run until clean. Lint errors = task not done.
+`gofmt` non-negotiable — zero diff allowed. Run `gofmt -w .` if in doubt.
 
 ## Vulnerability Scanning
 
-After modifying `go.mod` or `go.sum`, run `govulncheck ./...` before marking work complete
-(use `govulncheck -mod=vendor ./...` if a `vendor/` directory is present).
-Fix called vulnerabilities: `go get <module>@<fixed>`, `go mod tidy`, re-vendor if applicable,
-then re-run until clean. Imported-only vulnerabilities must be reported to the user.
-Do not consider a task done while called vulnerabilities remain.
+After modifying `go.mod` / `go.sum`: run `govulncheck ./...` before marking work complete.
+(`vendor/` is honored via `GOFLAGS=-mod=vendor` in env; govulncheck has no `-mod` CLI flag.)
+Fix called vulns: `go get <module>@<fixed>`, `go mod tidy`, re-vendor if applicable,
+re-run until clean. Imported-only vulns: report to user.
+Called vulns remaining = task not done.
 
 ## Dependency Management
 
-After any change to `go.mod`, run `go mod tidy` then `go mod vendor`.
-The `vendor/` directory must be committed to Git — it must not be gitignored.
-Use `go build -mod=vendor` in CI. Never run `go get` inside a Docker build without
-updating the vendor directory afterward.
+Any `go.mod` change → run `go mod tidy` then `go mod vendor`.
+`vendor/` must be committed — never gitignored.
+CI uses `go build -mod=vendor`. Never `go get` inside Docker build without re-vendoring after.
 
 ## Testing & Architecture
 
-Follow Red-Green-Refactor: write a failing test before any implementation code.
-Use dependency injection via constructors — no package-level globals, no `init()` side effects.
-Define small, focused interfaces at the call site. Never inject a concrete type where an
-interface suffices. Push all I/O (DB, HTTP, filesystem) to the edges; keep domain logic
-free of side effects and testable without external services.
+Red-Green-Refactor: failing test first, then implementation.
+DI via constructors — no package-level globals, no `init()` side effects.
+Small, focused interfaces at call site. Never inject concrete type where interface suffices.
+Push I/O (DB, HTTP, filesystem) to edges. Domain logic side-effect-free, testable without
+external services.
 
 ## Project Layout
 
-Layered layout for non-trivial Go services. `internal/` is a compiler-enforced
-boundary — packages inside cannot be imported from outside the module, which
-keeps domain logic private by construction.
+Layered layout for non-trivial Go services. `internal/` = compiler-enforced boundary —
+packages inside not importable outside module → domain logic private by construction.
 
 ```
 cmd/<binary>/main.go        # entrypoint + dependency wiring
@@ -104,35 +107,61 @@ internal/delivery/http/     # HTTP handlers, DTOs, middleware
 pkg/                        # only if code is intentionally exported
 ```
 
-Two layers (handler + store) are acceptable for small CRUD services; use the
-full four-layer split when domain complexity justifies it. Do not add
-`usecase` passthrough files that only forward calls.
+Two layers (handler + store) OK for small CRUD. Full four-layer split when domain
+complexity justifies. No `usecase` passthrough files that forward calls.
 
-Tests live next to the code (`foo.go` + `foo_test.go`). Cross-package
-integration tests go under `test/` at the module root.
+Tests next to code (`foo.go` + `foo_test.go`). Cross-package integration tests under
+`test/` at module root.
 
 ## Dependency Injection
 
-Choose a DI mechanism once and keep it uniform across the service.
+Pick one DI mechanism, keep uniform across service.
 
 | Mechanism | Use when | Trade-off |
 |-----------|----------|-----------|
-| Manual (explicit constructors in `main.go`) | Default for most services | Verbose when the graph grows past ~50 wiring lines |
-| Google Wire (compile-time codegen) | `main.go` wiring becomes unreadable or diverges per environment | Extra build step, generated code to keep in sync |
-| Uber Dig (runtime reflection) | Avoid | Errors surface at runtime, undermines Go's compile-time safety |
+| Manual (explicit constructors in `main.go`) | Default for most services | Verbose when graph grows past ~50 wiring lines |
+| Google Wire (compile-time codegen) | `main.go` wiring unreadable or diverges per env | Extra build step, generated code to sync |
+| Uber Dig (runtime reflection) | Avoid | Errors surface at runtime, undermines Go compile-time safety |
 
-Default is manual. Switch to Wire only when manual wiring is demonstrably
-unmaintainable. Do not adopt Dig.
+Default = manual. Switch to Wire only if manual wiring demonstrably unmaintainable.
+Do not adopt Dig.
+
+## API Design (REST)
+
+OpenAPI 3.x spec at `api/openapi.yaml` before implementing handlers.
+JSON for request/response bodies. HTTP status codes match semantics:
+200 OK, 201 Created, 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found,
+422 Unprocessable Entity, 500 Internal Server Error.
+Middleware order: recover → logging → metrics → auth → handler.
+
+**Spec-to-code workflow:**
+
+| Workflow | Tooling | Use when |
+|----------|---------|----------|
+| Schema-first | `oapi-codegen` generates Go server stubs from `api/openapi.yaml` | Public API, contract negotiated with consumers, multiple backends must match |
+| Code-first | `huma` generates OpenAPI from annotated Go structs | Internal API iterating fast with implementation |
+
+Both valid. Spec = single source of truth consumed by frontend. Pick one per service,
+don't mix.
+
+**Frontend client generation:** Nuxt frontend consuming this API → generate TS types +
+fetch client from same spec via `openapi-typescript` + `openapi-fetch`. Commit generated
+file, fail CI on diff from fresh regeneration.
+
+**s3proxy exception:** this service implements the AWS S3 HTTP wire protocol on the
+client side, not a custom REST API. The "spec" is the S3 API itself; clients are
+existing AWS SDKs. The OpenAPI / spec-to-code requirement above does not apply for the
+S3-facing surface — only for any management or admin endpoints exposed alongside it.
 
 ## Error Handling
 
-Follow the "crash early, let the orchestrator recover" model:
-- Transient errors (network, timeout): retry 1–3 times with exponential backoff, log each
-  retry at WARN. If retries exhausted, log at ERROR with full context and exit non-zero.
-- Structural errors (missing config, unavailable critical dependency): crash immediately
-  at startup. No retry.
-Never swallow errors silently. Every error must include enough context for diagnosis
-without accessing the running pod.
+"Crash early, let orchestrator recover" model:
+- Transient errors (network, timeout): retry 1–3× exponential backoff, log each retry
+  at WARN. Retries exhausted → log ERROR with full context, exit non-zero.
+- Structural errors (missing config, unavailable critical dep): crash immediately at
+  startup. No retry.
+Never swallow errors silently. Every error includes enough context for diagnosis
+without accessing running pod.
 
 ## Local Development
 
@@ -172,13 +201,13 @@ Metrics are collected by VictoriaMetrics.
 
 ## Alerting
 
-Define Alertmanager rules in `monitoring/alerts/s3proxy.yaml`, versioned in this repository.
-Mandatory alerts for every service:
-- `HighErrorRate`: error rate > 5% over 5 minutes
-- `HighLatency`: p95 latency > 1s over 5 minutes
+Alertmanager rules in `monitoring/alerts/<service>.yaml`, versioned in repo.
+Mandatory alerts every service:
+- `HighErrorRate`: error rate > 5% over 5 min
+- `HighLatency`: p95 latency > 1s over 5 min
 - `ServiceDown`: `up == 0`
-- `HighCrashRate`: any crash in the last 5 minutes
-Thresholds must be reviewed against the service's SLA and adjusted accordingly.
+- `HighCrashRate`: any crash in last 5 min
+Review thresholds against service SLA, adjust accordingly.
 
 ## Grafana Dashboards
 
@@ -199,6 +228,20 @@ Inject `trace_id` from the span context into every log entry.
 Configure the OTLP endpoint via `OTEL_EXPORTER_OTLP_ENDPOINT`.
 Traces are collected by the Grafana / VictoriaMetrics / Loki stack.
 
+## Authentication
+
+Authentication uses Keycloak with OAuth 2.0 / OIDC.
+- Access tokens stored in HttpOnly, Secure, SameSite=Strict cookies — never JS or
+  localStorage. Token readable in JS turns any XSS into identity compromise.
+- CLI / agent access: Keycloak offline token or service account with restricted scopes.
+- No long-lived static tokens. All tokens must be rotatable and revocable.
+- Validate JWT signatures against Keycloak JWKS endpoint on every request.
+- Never log tokens or authorization headers.
+
+Note: the S3-protocol surface authenticates clients via AWS SigV4 against
+credentials proxied/configured locally — this section governs any management,
+admin, or operator-facing endpoints exposed alongside the S3 surface.
+
 ## Secrets Management
 
 All secrets are sourced from HashiCorp Vault. For this service:
@@ -212,22 +255,28 @@ Never log secret values, even at DEBUG level.
 
 ## SBOM
 
-Generate a Software Bill of Materials for each release in CycloneDX format using `syft`.
-Attach the SBOM to the release artifact alongside the Docker image.
-Run `grype <image>` on the SBOM to detect vulnerabilities in the final image before publishing.
+Generate Software Bill of Materials per release in CycloneDX format via `syft`.
+Attach SBOM to release artifact alongside Docker image.
+Run `grype <image>` on SBOM to detect vulns in final image before publishing.
 
 ## Dependency Upgrade Policy
 
-Configure Renovate on this repository:
+Configure Renovate on repo:
 - Auto-merge security patches if all CI checks pass.
-- Human review required for minor and major version bumps.
+- Human review required for minor + major version bumps.
 - Group updates by category (dev deps, prod deps, build tools).
 
 Cadence:
-- Critical CVE (CVSS ≥ 9.0): patch within 48 hours.
+- Critical CVE (CVSS ≥ 9.0): patch within 48h.
 - High CVE (CVSS ≥ 7.0): patch within one sprint.
 - Minor patches: monthly.
 - Minor versions: quarterly with review.
 - Major versions: planned, one at a time.
 
-Never let a dependency fall more than 2 minor versions behind.
+Never let a dep fall more than 2 minor versions behind.
+
+## Product Validation Workflow
+
+This project opted out of the iagen-dev product-validation skills (`dev-product-shape`,
+`dev-product-review`, `dev-arch-review`). Re-enable later via `/dev-update-project`
+when the scope grows past a single-file change set or moves toward greenfield work.
