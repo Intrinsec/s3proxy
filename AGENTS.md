@@ -12,12 +12,52 @@ Tier: **C (shared, critical)**.
 
 Default agent responses must be in English, even when the user writes in French.
 Respond in French only when the user explicitly requests a French response.
-Prefer terse Caveman-style responses when Caveman is available, while preserving technical clarity.
+
+Caveman compression is **mandatory** for all conversational responses (default level: `full`).
+Code blocks, commit messages, PR descriptions, security warnings, and irreversible-action
+confirmations remain in normal prose (per Caveman's auto-clarity rules). Do not disable
+Caveman unless the user explicitly says "stop caveman" or "normal mode".
 
 HARD RULE: all code, code comments, identifiers, inline doc strings, commit messages,
 ADRs, and technical documentation must be written in English for every project type,
 regardless of the team's spoken language.
 User-facing strings and UI copy are exempt — use the appropriate language for the audience.
+
+## Workflow Skills (mandatory)
+
+Every agent session in this repository must load and apply these skill packs:
+
+- **superpowers** — process discipline (`brainstorming`, `writing-plans`, `executing-plans`,
+  `test-driven-development`, `systematic-debugging`, `verification-before-completion`,
+  `requesting-code-review`).
+- **caveman** — response-compression style (see Language section).
+
+If either pack is missing, install per the iagen-dev `INSTALL.md` before starting work.
+
+### Plan-writing is mandatory before non-trivial implementation
+
+For any feature, refactor, or bugfix that touches more than a single function or that
+the agent cannot fully reason about in one pass:
+
+1. Run the `superpowers:brainstorming` skill to clarify intent and requirements.
+2. Run `superpowers:writing-plans` and persist the plan under
+   `docs/superpowers/plans/<short-name>.md` (committed to git).
+3. Execute via `superpowers:executing-plans` (single-session) or
+   `superpowers:subagent-driven-development` (parallelisable steps).
+4. Gate completion with `superpowers:verification-before-completion` — no "done" claim
+   without evidence (test output, lint output, build output).
+
+**Trivial edits exception:** typos, single-line config tweaks, and self-evident
+one-liners may skip steps 1–3 but must still verify before claiming done.
+
+### Bug fixes go through systematic-debugging
+
+Any bug, failing test, or unexpected behaviour triggers `superpowers:systematic-debugging`
+before proposing a fix. Do not patch symptoms without identifying the root cause.
+
+### Code review before merge
+
+Before merging or opening a PR for non-trivial work, run `superpowers:requesting-code-review`.
 
 ## Code Quality
 
