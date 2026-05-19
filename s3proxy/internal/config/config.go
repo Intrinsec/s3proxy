@@ -95,6 +95,14 @@ func (c *Config) MaxPutBodySize() int64 {
 	return v
 }
 
+// DecryptionFallback reports whether GetObject should retry decryption with an
+// all-zero KEK when the configured KEK fails (S3PROXY_DECRYPTION_FALLBACK=1).
+// Intended for one-shot migrations away from objects written without an
+// encryption key; leave off in steady state.
+func (c *Config) DecryptionFallback() bool {
+	return c.k.Bool("s3proxy.decryption.fallback")
+}
+
 // ---------------------------------------------------------------------------
 // Package-level compatibility shim. The default Config is populated by
 // LoadConfig() and read by the GetX getters so existing call sites that do not
@@ -146,3 +154,6 @@ func GetMaxPutBodySize() int64 { return Default().MaxPutBodySize() }
 
 // GetInsecure returns whether upstream S3 traffic should use http:// from the default config.
 func GetInsecure() bool { return Default().Insecure() }
+
+// GetDecryptionFallback returns the decryption-fallback flag from the default config.
+func GetDecryptionFallback() bool { return Default().DecryptionFallback() }

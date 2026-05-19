@@ -8,6 +8,8 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  strategy:
+    {{- toYaml .Values.deploymentStrategy | nindent 4 }}
   selector:
     matchLabels:
       {{- include "s3proxy.selectorLabels" . | nindent 6 }}
@@ -72,7 +74,7 @@ spec:
             value: {{ .Values.config.otlpHeaders | quote }}
           {{- end }}
           {{- with .Values.extraEnv }}
-          {{- toYaml . | nindent 10 }}
+            {{- toYaml . | nindent 10 }}
           {{- end }}
           ports:
             - name: http

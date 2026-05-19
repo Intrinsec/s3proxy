@@ -54,6 +54,7 @@ const s3OperationTimeout = 2 * time.Minute
 // object bundles data to implement http.Handler methods that use data from incoming requests.
 type object struct {
 	keks                      cryptoutil.KEKProvider
+	decryptionFallback        bool
 	client                    s3Client
 	key                       string
 	bucket                    string
@@ -137,7 +138,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		}
 
 		decryptStart := time.Now()
-		plaintext, err = cryptoutil.Decrypt(body, encryptedDEK, kek)
+		plaintext, err = o.decryptWithFallback(body, encryptedDEK, kek, log)
 		o.observeDecrypt(time.Since(decryptStart))
 		// The ciphertext buffer is no longer needed once Decrypt has produced
 		// plaintext (or failed). Drop the reference and hint the runtime so a
@@ -167,6 +168,25 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// decryptWithFallback attempts decryption with the configured KEK and, when the
+// fallback flag is on, retries with an all-zero KEK so that objects encrypted
+// before the proxy had a configured key remain readable during migration.
+func (o object) decryptWithFallback(ciphertext, encryptedDEK []byte, kek [32]byte, log *slog.Logger) ([]byte, error) {
+	plaintext, err := cryptoutil.Decrypt(ciphertext, encryptedDEK, kek)
+	if err == nil || !o.decryptionFallback {
+		return plaintext, err
+	}
+
+	log.Warn("primary KEK failed, retrying decryption fallback", "key", o.key, "bucket", o.bucket, "error", err)
+	plaintext, fallbackErr := cryptoutil.Decrypt(ciphertext, encryptedDEK, [32]byte{})
+	if fallbackErr != nil {
+		return nil, err
+	}
+
+	log.Warn("object decrypted using fallback key path", "key", o.key, "bucket", o.bucket)
+	return plaintext, nil
 }
 
 // put is a http.HandlerFunc that implements the PUT method for objects.

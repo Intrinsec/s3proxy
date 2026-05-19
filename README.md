@@ -67,10 +67,12 @@ S3Proxy can be easily deployed on Kubernetes using its official Helm chart locat
 
 Key configurable parameters via `values.yaml` include:
 - `replicaCount`: Number of S3Proxy instances to run.
+- `deploymentStrategy`: Kubernetes Deployment rollout strategy (`RollingUpdate` by default, or `Recreate`).
 - `image`: Docker image repository and tag for S3Proxy.
 - `args`: Command-line arguments passed to the S3Proxy binary (e.g., `--no-tls` to disable TLS, `--level` for log verbosity).
 - `cert`: Configuration for CertManager integration to automatically provision TLS certificates.
 - `config`: Settings for the S3 backend, including `host`, `throttling` (maximum requests per second), `accessKey`, `secretKey`, and `encryptKey` (the KEK).
+- `extraEnv`: Additional environment variables, such as `S3PROXY_DECRYPTION_FALLBACK` for temporary fallback decryption.
 - `service`: Kubernetes Service configuration (defaults to `ClusterIP` on port `4433`).
 - `ingress`: Optional Ingress configuration for external access.
 - `resources`: CPU and memory limits and requests for the S3Proxy pods.

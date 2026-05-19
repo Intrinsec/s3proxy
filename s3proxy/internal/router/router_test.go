@@ -228,6 +228,30 @@ func TestGetObjectReadsLegacyObjectWithoutKEKVersion(t *testing.T) {
 	assert.Equal(t, "legacy payload", rec.Body.String())
 }
 
+func TestGetObjectUsesDecryptionFallback(t *testing.T) {
+	// Object on disk was encrypted with an all-zero KEK (pre-encryption-key era);
+	// the proxy is now configured with a real KEK but has the fallback flag on,
+	// so decryption should still succeed via the zero-KEK retry path.
+	keks := newTestKEKs(t, "configured encryption key")
+	version, _ := keks.Current()
+	client := newEncryptedGetObjectClient(t, [32]byte{}, version, []byte("secret payload"))
+	obj := object{
+		keks:               keks,
+		decryptionFallback: true,
+		client:             client,
+		key:                "key",
+		bucket:             "bucket",
+		log:                testLogger(),
+	}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	obj.get(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "secret payload", rec.Body.String())
+}
+
 func newTestKEKs(t *testing.T, seed string) cryptoutil.KEKProvider {
 	t.Helper()
 	keks, err := cryptoutil.NewKEKProvider(seed)

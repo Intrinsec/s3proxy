@@ -25,7 +25,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
-func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, log *slog.Logger, metrics *monitoring.Metrics) http.HandlerFunc {
+func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil.KEKProvider, decryptionFallback bool, log *slog.Logger, metrics *monitoring.Metrics) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.Debug("intercepting", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 		if req.Header.Get("Range") != "" {
@@ -41,6 +41,7 @@ func handleGetObject(client s3Client, key string, bucket string, keks cryptoutil
 
 		obj := object{
 			keks:                 keks,
+			decryptionFallback:   decryptionFallback,
 			client:               client,
 			key:                  key,
 			bucket:               bucket,
