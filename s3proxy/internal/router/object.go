@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -27,6 +28,22 @@ import (
 	"github.com/intrinsec/s3proxy/internal/monitoring"
 	s3internal "github.com/intrinsec/s3proxy/internal/s3"
 )
+
+// freeOSMemoryThreshold gates the explicit runtime/debug.FreeOSMemory call.
+// Large object bodies sit on the heap as one big allocation; without this hint
+// the runtime hangs on to the released memory and the process RSS stays near
+// peak for a long time, which trips OOM kills under sustained multi-GB traffic.
+const freeOSMemoryThreshold = 100 * 1024 * 1024
+
+// releaseLargeBuffer nils the slice header and asks the runtime to return the
+// freed pages to the OS when the buffer was big enough to matter.
+func releaseLargeBuffer(buf *[]byte) {
+	n := len(*buf)
+	*buf = nil
+	if n >= freeOSMemoryThreshold {
+		debug.FreeOSMemory()
+	}
+}
 
 // s3OperationTimeout bounds the total duration of an individual S3 GetObject/PutObject call.
 // We detach from the request context (context.WithoutCancel) so a client disconnect does not
@@ -122,6 +139,10 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		decryptStart := time.Now()
 		plaintext, err = cryptoutil.Decrypt(body, encryptedDEK, kek)
 		o.observeDecrypt(time.Since(decryptStart))
+		// The ciphertext buffer is no longer needed once Decrypt has produced
+		// plaintext (or failed). Drop the reference and hint the runtime so a
+		// multi-GB transfer does not double-occupy RAM during the write phase.
+		releaseLargeBuffer(&body)
 		if err != nil {
 			log.Error("GetObject decrypting response", "error", err)
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
@@ -132,14 +153,17 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	select {
 	case <-r.Context().Done():
 		log.Info("Request was canceled by client")
+		releaseLargeBuffer(&plaintext)
 		return
 	default:
 		w.WriteHeader(http.StatusOK)
-		if _, err := w.Write(plaintext); err != nil {
-			if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+		_, writeErr := w.Write(plaintext)
+		releaseLargeBuffer(&plaintext)
+		if writeErr != nil {
+			if errors.Is(writeErr, syscall.EPIPE) || errors.Is(writeErr, syscall.ECONNRESET) {
 				log.Info("Client closed the connection")
 			} else {
-				log.Error("GetObject sending response", "error", err)
+				log.Error("GetObject sending response", "error", writeErr)
 			}
 		}
 	}
@@ -155,6 +179,10 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	encryptStart := time.Now()
 	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(o.data, kek)
 	o.observeEncrypt(time.Since(encryptStart))
+	// The plaintext input is no longer needed; ciphertext is what gets uploaded.
+	// Drop the reference before the long PutObject network call so the runtime
+	// can reclaim those pages instead of holding plaintext + ciphertext at once.
+	releaseLargeBuffer(&o.data)
 	if err != nil {
 		log.Error("PutObject", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -167,6 +195,10 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	output, err := o.client.PutObject(ctx, o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
+	// Release the ciphertext buffer as soon as the upstream call returns, win
+	// or lose: the bytes are either persisted upstream or we are about to fail
+	// the request, and either way we no longer need them.
+	releaseLargeBuffer(&ciphertext)
 	if err != nil {
 		log.Error("PutObject sending request to S3", "error", err)
 		o.incUpstreamError()
@@ -188,7 +220,13 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 }
 
 func setPutObjectHeaders(w http.ResponseWriter, output *s3.PutObjectOutput) {
-	w.Header().Set("x-amz-server-side-encryption", string(output.ServerSideEncryption))
+	// Some upstreams (e.g. Hetzner Object Storage) return an empty
+	// ServerSideEncryption on zero-byte objects; forwarding the empty header
+	// confuses strict SDK clients, so only set it when the upstream actually
+	// reported an algorithm.
+	if sse := string(output.ServerSideEncryption); sse != "" {
+		w.Header().Set("x-amz-server-side-encryption", sse)
+	}
 	if output.VersionId != nil {
 		w.Header().Set("x-amz-version-id", *output.VersionId)
 	}
