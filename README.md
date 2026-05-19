@@ -4,7 +4,9 @@
 
 [![CI](https://github.com/Intrinsec/s3proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/Intrinsec/s3proxy/actions/workflows/ci.yml)
 [![Lint](https://github.com/Intrinsec/s3proxy/actions/workflows/golangci-lint.yml/badge.svg)](https://github.com/Intrinsec/s3proxy/actions/workflows/golangci-lint.yml)
-[![Go](https://img.shields.io/badge/go-1.26-blue)](go.mod)
+[![Docker](https://github.com/Intrinsec/s3proxy/actions/workflows/docker-build-push.yml/badge.svg)](https://github.com/Intrinsec/s3proxy/actions/workflows/docker-build-push.yml)
+[![Helm](https://github.com/Intrinsec/s3proxy/actions/workflows/helm-push.yml/badge.svg)](https://github.com/Intrinsec/s3proxy/actions/workflows/helm-push.yml)
+[![Go version](https://img.shields.io/github/go-mod/go-version/Intrinsec/s3proxy)](go.mod)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
 
 S3Proxy sits in front of an S3-compatible backend (AWS S3, Scaleway Object Storage, MinIO, …) and transparently encrypts `PutObject` bodies before they leave the cluster and decrypts `GetObject` responses before they reach the client. Clients keep talking plain S3; the data at rest is always ciphertext.
