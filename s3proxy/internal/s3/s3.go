@@ -226,10 +226,14 @@ func (c Client) PutObject(ctx context.Context, bucket, key, tags, contentType, o
 		Bucket:                    &bucket,
 		Key:                       &key,
 		Body:                      bytes.NewReader(body),
-		Tagging:                   &tags,
 		Metadata:                  metadata,
 		ContentType:               &contentType,
 		ObjectLockLegalHoldStatus: types.ObjectLockLegalHoldStatus(objectLockLegalHoldStatus),
+	}
+	// Only forward Tagging when the client supplied a non-empty value. Some S3-compatible
+	// backends (e.g. Backblaze B2) reject any presence of x-amz-tagging, even when empty.
+	if tags != "" {
+		putObjectInput.Tagging = &tags
 	}
 	if sseCustomerAlgorithm != "" {
 		putObjectInput.SSECustomerAlgorithm = &sseCustomerAlgorithm
