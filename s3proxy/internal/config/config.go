@@ -12,8 +12,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/knadh/koanf"
 	"github.com/knadh/koanf/providers/env"
+	"github.com/knadh/koanf/v2"
 )
 
 // Config holds every s3proxy runtime setting loaded from the environment.
