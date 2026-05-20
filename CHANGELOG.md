@@ -14,6 +14,16 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+### Chart
+
+- **`chart/1.9.0`** — Replace the bundled Grafana dashboard `ConfigMap`
+  with a `GrafanaDashboard` CRD (`grafana.integreatly.org/v1beta1`)
+  reconciled by grafana-operator. New `grafanaDashboard.instanceSelector`,
+  `allowCrossNamespaceImport`, `folder`, `resyncPeriod` knobs; removed
+  the sidecar-only `grafanaDashboard.label`. **Breaking** for installs
+  that relied on the dashboard sidecar — switch to grafana-operator or
+  pin the chart to `1.8.x`.
+
 ## [1.8.1] — 2026-05-20
 
 Patch release. Fixes B2 (and other non-AWS S3-compatible backends)

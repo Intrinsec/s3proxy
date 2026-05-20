@@ -194,15 +194,29 @@
     "grafanaDashboard": {
       "type": "object",
       "additionalProperties": true,
-      "description": "Opt-in ConfigMap shipping the bundled Grafana dashboard.",
+      "description": "Opt-in GrafanaDashboard CRD (grafana.integreatly.org/v1beta1) shipping the bundled dashboard. Requires grafana-operator.",
       "properties": {
         "enabled": { "type": "boolean" },
         "namespace": { "type": "string" },
-        "label": { "type": "string", "minLength": 1 },
+        "allowCrossNamespaceImport": { "type": "boolean" },
+        "folder": { "type": "string" },
+        "resyncPeriod": { "type": "string", "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$" },
+        "instanceSelector": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "matchLabels": {
+              "type": "object",
+              "minProperties": 1,
+              "additionalProperties": { "type": "string" }
+            }
+          },
+          "required": ["matchLabels"]
+        },
         "labels": { "type": "object" },
         "annotations": { "type": "object" }
       },
-      "required": ["enabled"]
+      "required": ["enabled", "instanceSelector"]
     },
     "extraVolumes": { "type": "array" },
     "extraVolumeMounts": { "type": "array" },
