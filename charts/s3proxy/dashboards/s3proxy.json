@@ -24,7 +24,10 @@
         "type": "query",
         "datasource": {"type": "prometheus", "uid": "${datasource}"},
         "query": "label_values(http_requests_total, job)",
-        "includeAll": false,
+        "regex": "/s3proxy/",
+        "includeAll": true,
+        "allValue": ".*s3proxy.*",
+        "current": {"text": "All", "value": "$__all"},
         "multi": false,
         "refresh": 2
       },
@@ -154,6 +157,122 @@
         }
       ],
       "fieldConfig": {"defaults": {"unit": "ops"}}
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "Runtime (Go)",
+      "collapsed": false,
+      "gridPos": {"x": 0, "y": 24, "w": 24, "h": 1},
+      "panels": []
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "CPU usage (cores)",
+      "gridPos": {"x": 0, "y": 25, "w": 12, "h": 8},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "rate(process_cpu_seconds_total{job=~\"$job\", instance=~\"$instance\"}[2m])",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "none", "min": 0}}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Resident memory (RSS)",
+      "gridPos": {"x": 12, "y": 25, "w": 12, "h": 8},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "process_resident_memory_bytes{job=~\"$job\", instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes", "min": 0}}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Go heap in use",
+      "gridPos": {"x": 0, "y": 33, "w": 12, "h": 8},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "go_memstats_heap_inuse_bytes{job=~\"$job\", instance=~\"$instance\"}",
+          "legendFormat": "heap inuse {{instance}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "go_memstats_heap_alloc_bytes{job=~\"$job\", instance=~\"$instance\"}",
+          "legendFormat": "heap alloc {{instance}}",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes", "min": 0}}
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Goroutines",
+      "gridPos": {"x": 12, "y": 33, "w": 12, "h": 8},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "go_goroutines{job=~\"$job\", instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}}
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "GC pause (p50 / p95 / p99)",
+      "gridPos": {"x": 0, "y": 41, "w": 12, "h": 8},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "go_gc_duration_seconds{job=~\"$job\", instance=~\"$instance\", quantile=\"0.5\"}",
+          "legendFormat": "p50 {{instance}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "go_gc_duration_seconds{job=~\"$job\", instance=~\"$instance\", quantile=\"0.95\"}",
+          "legendFormat": "p95 {{instance}}",
+          "refId": "B"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "go_gc_duration_seconds{job=~\"$job\", instance=~\"$instance\", quantile=\"0.99\"}",
+          "legendFormat": "p99 {{instance}}",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "s", "min": 0}}
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Open file descriptors",
+      "gridPos": {"x": 12, "y": 41, "w": 12, "h": 8},
+      "targets": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "expr": "process_open_fds{job=~\"$job\", instance=~\"$instance\"}",
+          "legendFormat": "{{instance}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "min": 0}}
     }
   ]
 }
