@@ -19,11 +19,21 @@
         "hide": 0
       },
       {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "query": "label_values(http_requests_total, job)",
+        "includeAll": false,
+        "multi": false,
+        "refresh": 2
+      },
+      {
         "name": "instance",
         "label": "Instance",
         "type": "query",
         "datasource": {"type": "prometheus", "uid": "${datasource}"},
-        "query": "label_values(http_requests_total{service=\"s3proxy\"}, instance)",
+        "query": "label_values(http_requests_total{job=~\"$job\"}, instance)",
         "includeAll": true,
         "multi": true,
         "refresh": 2
@@ -39,7 +49,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum by (method, path) (rate(http_requests_total{service=\"s3proxy\", instance=~\"$instance\"}[1m]))",
+          "expr": "sum by (method, path) (rate(http_requests_total{job=~\"$job\", instance=~\"$instance\"}[1m]))",
           "legendFormat": "{{method}} {{path}}",
           "refId": "A"
         }
@@ -54,7 +64,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "sum(rate(http_requests_total{service=\"s3proxy\", instance=~\"$instance\", status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total{service=\"s3proxy\", instance=~\"$instance\"}[5m])), 1e-12)",
+          "expr": "sum(rate(http_requests_total{job=~\"$job\", instance=~\"$instance\", status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total{job=~\"$job\", instance=~\"$instance\"}[5m])), 1e-12)",
           "legendFormat": "error ratio",
           "refId": "A"
         }
@@ -69,19 +79,19 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"s3proxy\", instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"s3proxy\", instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[5m])))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{service=\"s3proxy\", instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[5m])))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -96,7 +106,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "rate(service_crashes_total{service=\"s3proxy\", instance=~\"$instance\"}[5m])",
+          "expr": "rate(service_crashes_total{job=~\"$job\", instance=~\"$instance\"}[5m])",
           "legendFormat": "crashes/s",
           "refId": "A"
         }
@@ -111,13 +121,13 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(s3proxy_encrypt_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(s3proxy_encrypt_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[5m])))",
           "legendFormat": "encrypt p95",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(s3proxy_decrypt_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(s3proxy_decrypt_duration_seconds_bucket{job=~\"$job\", instance=~\"$instance\"}[5m])))",
           "legendFormat": "decrypt p95",
           "refId": "B"
         }
@@ -132,13 +142,13 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "rate(s3proxy_throttled_total{instance=~\"$instance\"}[1m])",
+          "expr": "rate(s3proxy_throttled_total{job=~\"$job\", instance=~\"$instance\"}[1m])",
           "legendFormat": "throttled/s",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "${datasource}"},
-          "expr": "rate(s3proxy_upstream_errors_total{instance=~\"$instance\"}[1m])",
+          "expr": "rate(s3proxy_upstream_errors_total{job=~\"$job\", instance=~\"$instance\"}[1m])",
           "legendFormat": "upstream errors/s",
           "refId": "B"
         }
