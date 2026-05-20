@@ -1,0 +1,282 @@
+name: Release
+
+# Triggered on any version tag (`v*`). All gate jobs (lint, unit-test,
+# test-generate, test-integration, govulncheck, license-check, build) must
+# pass before the release job runs. The release job builds static stripped
+# binaries for linux/{amd64,arm64} + darwin/{amd64,arm64}, attaches a
+# per-platform CycloneDX SBOM produced by syft against the actual binary
+# (not just the module graph), signs `SHA256SUMS` with cosign keyless OIDC,
+# and publishes a GitHub Release with all artifacts.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -mod=vendor
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11.4
+
+  unit-test:
+    name: unit-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - name: upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  test-generate:
+    name: test-generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go generate
+        run: go generate ./s3proxy/...
+      - name: verify no drift in committed generated sources
+        run: |
+          if ! git diff --exit-code -- s3proxy; then
+            echo "::error::go generate produced uncommitted changes; regenerate locally and commit"
+            exit 1
+          fi
+
+  test-integration:
+    name: test-integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test -tags=e2e
+        run: go test -tags=e2e -timeout=20m ./s3proxy/internal/e2e/...
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  license-check:
+    name: license-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go-licenses check
+        run: |
+          go install github.com/google/go-licenses@latest
+          # Block forbidden (GPL family in restrictive contexts) + restricted +
+          # unknown licenses. notice/permissive/reciprocal still allowed.
+          go-licenses check \
+            --disallowed_types=forbidden,restricted,unknown \
+            ./s3proxy/...
+
+  build:
+    name: build
+    needs: [lint, unit-test, test-generate, test-integration, govulncheck, license-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { goos: linux,  goarch: amd64 }
+          - { goos: linux,  goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: resolve version
+        id: ver
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          if [ "$TAG" = "$GITHUB_REF" ]; then
+            # workflow_dispatch on a non-tag ref: synthesize dev marker
+            VERSION="0.0.0-${GITHUB_SHA::7}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "asset_base=s3proxy_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}" >> "$GITHUB_OUTPUT"
+
+      - name: build static stripped binary
+        env:
+          CGO_ENABLED: "0"
+          GOOS:   ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          BIN="dist/${{ steps.ver.outputs.asset_base }}"
+          # -s -w strips DWARF + symbol table; -trimpath removes local paths;
+          # CGO_ENABLED=0 produces a fully static binary (no libc dependency).
+          go build \
+            -trimpath \
+            -ldflags='-s -w' \
+            -o "$BIN" \
+            ./s3proxy/cmd
+
+      - name: SBOM (CycloneDX, binary-based) via syft
+        uses: anchore/sbom-action@v0
+        with:
+          file: dist/${{ steps.ver.outputs.asset_base }}
+          format: cyclonedx-json
+          output-file: dist/${{ steps.ver.outputs.asset_base }}.sbom.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: upload binary + sbom
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.ver.outputs.asset_base }}
+          path: |
+            dist/${{ steps.ver.outputs.asset_base }}
+            dist/${{ steps.ver.outputs.asset_base }}.sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: release
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only publish a GitHub Release on actual tag pushes. workflow_dispatch
+    # exists so the gates can be exercised on demand without cutting a release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write   # create release + upload assets
+      id-token: write   # cosign keyless OIDC
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: stage release assets
+        id: stage
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          mkdir -p release
+          # Flatten the per-platform artifact directories.
+          find artifacts -type f \
+            \( -name "s3proxy_${VERSION}_*"  \) \
+            -exec cp -v {} release/ \;
+          ls -la release/
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: SHA256SUMS
+        working-directory: release
+        run: |
+          # Deterministic order; checksums cover binaries + SBOMs.
+          ( cd . && sha256sum s3proxy_* | LC_ALL=C sort ) > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: cosign sign-blob (keyless OIDC) → SHA256SUMS.sig
+        working-directory: release
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign-blob \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.pem \
+            SHA256SUMS
+          # Also produce a sigstore bundle for verifiers that prefer it.
+          cosign sign-blob \
+            --bundle SHA256SUMS.cosign.bundle \
+            SHA256SUMS
+
+      - name: create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        working-directory: release
+        run: |
+          NOTES_FILE="$(mktemp)"
+          {
+            echo "## ${TAG}"
+            echo
+            echo "Static stripped binaries for linux/{amd64,arm64} + darwin/{amd64,arm64}."
+            echo
+            echo "### Verifying the release"
+            echo
+            echo '```sh'
+            echo "# 1. fetch SHA256SUMS, SHA256SUMS.sig, SHA256SUMS.pem"
+            echo "# 2. verify signature (keyless OIDC, GitHub Actions issuer):"
+            echo "cosign verify-blob \\"
+            echo "  --certificate SHA256SUMS.pem \\"
+            echo "  --signature   SHA256SUMS.sig \\"
+            echo "  --certificate-identity-regexp 'https://github.com/${GITHUB_REPOSITORY}/.+' \\"
+            echo "  --certificate-oidc-issuer     'https://token.actions.githubusercontent.com' \\"
+            echo "  SHA256SUMS"
+            echo "# 3. verify your downloaded binary against SHA256SUMS:"
+            echo "sha256sum --check --ignore-missing SHA256SUMS"
+            echo '```'
+            echo
+            echo "Each binary ships with a per-platform CycloneDX SBOM (\`*.sbom.cdx.json\`)"
+            echo "generated by syft against the actual binary."
+          } > "$NOTES_FILE"
+
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file "$NOTES_FILE" \
+            --verify-tag \
+            s3proxy_* SHA256SUMS SHA256SUMS.sig SHA256SUMS.pem SHA256SUMS.cosign.bundle
