@@ -16,6 +16,12 @@ Two version streams move independently:
 
 ### Chart
 
+- **`chart/1.9.1`** — Make the bundled Grafana dashboard portable. Adds a
+  `datasource` template variable (type `datasource`, query `prometheus`)
+  so the dashboard binds to whichever Prometheus data source the target
+  Grafana exposes instead of hard-coding `uid: prometheus`. The existing
+  `instance` variable and every panel target now reference
+  `${datasource}`. No values changes; upgrade is in-place.
 - **`chart/1.9.0`** — Replace the bundled Grafana dashboard `ConfigMap`
   with a `GrafanaDashboard` CRD (`grafana.integreatly.org/v1beta1`)
   reconciled by grafana-operator. New `grafanaDashboard.instanceSelector`,
