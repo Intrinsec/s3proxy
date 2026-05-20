@@ -1,13 +1,26 @@
 name: Helm
 
+# Honors the dual-version stream policy documented in CHANGELOG.md:
+#   - `v*.*.*`      → app release; also re-publishes the chart at whatever
+#                     version is currently in charts/s3proxy/Chart.yaml.
+#   - `chart-v*`    → chart-only release; publishes the chart version
+#                     declared in charts/s3proxy/Chart.yaml. Use this when
+#                     only chart values/templates changed.
+#
+# In both cases the chart version published to ghcr is the `version:` field
+# from Chart.yaml — never overridden by the git tag.
+
 on:
   push:
-    tags: [ 'v*.*.*' ]
+    tags:
+      - 'v*.*.*'
+      - 'chart-v*'
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   CHART_REPO: intrinsec/s3proxy/charts
+  CHART_DIR: charts/s3proxy
 
 jobs:
   build:
@@ -25,15 +38,36 @@ jobs:
 
       - uses: azure/setup-helm@v4
 
-      - name: Get current tag without 'v'
-        run: echo "CURRENT_TAG=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+      - name: Lint chart
+        run: helm lint "${{ env.CHART_DIR }}"
 
-      - name: Chart | Push
-        uses: appany/helm-oci-chart-releaser@v0.3.0
-        with:
-          name: s3proxy
-          repository: ${{ env.CHART_REPO }}
-          tag: ${{ env.CURRENT_TAG }}
-          registry: ${{ env.REGISTRY }}
-          registry_username: ${{ github.actor }}
-          registry_password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package chart
+        id: package
+        run: |
+          helm package "${{ env.CHART_DIR }}" --destination .
+          PKG=$(ls s3proxy-*.tgz | head -1)
+          echo "pkg=${PKG}" >> "$GITHUB_OUTPUT"
+          # Sanity: refuse to push if the tag is `chart-vX.Y.Z` and the
+          # packaged chart version doesn't match X.Y.Z. Protects against
+          # forgetting to bump Chart.yaml before tagging.
+          REF="${GITHUB_REF#refs/tags/}"
+          case "$REF" in
+            chart-v*)
+              EXPECTED="${REF#chart-v}"
+              ACTUAL=$(echo "$PKG" | sed -E 's/^s3proxy-(.+)\.tgz$/\1/')
+              if [ "$EXPECTED" != "$ACTUAL" ]; then
+                echo "::error::tag chart-v${EXPECTED} but Chart.yaml version is ${ACTUAL}"
+                exit 1
+              fi
+              ;;
+          esac
+
+      - name: Login to ghcr.io
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login -u "${{ github.actor }}" --password-stdin "${{ env.REGISTRY }}"
+
+      - name: Push chart
+        run: |
+          helm push "${{ steps.package.outputs.pkg }}" \
+            "oci://${{ env.REGISTRY }}/${{ env.CHART_REPO }}"
