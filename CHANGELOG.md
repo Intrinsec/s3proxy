@@ -14,6 +14,27 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+## [1.8.1] — 2026-05-20
+
+Patch release. Fixes B2 (and other non-AWS S3-compatible backends)
+PutObject failures, and tightens the Helm chart release tag handling.
+
+### Fixed
+- **B2 / non-AWS PutObject compatibility** (#34, fixed in #44): the
+  AWS SDK was emitting an empty `x-amz-tagging` header on every
+  `PutObject` because `Tagging` was always set on the SDK input, even
+  when the incoming request carried no tag. Backblaze B2 rejects any
+  presence of `x-amz-tagging` with
+  `InvalidArgument: Unsupported header 'x-amz-tagging' received for this API call.`
+  Tagging is now only forwarded when the client supplied a non-empty
+  value, matching the existing pattern used for SSE-C fields.
+
+### CI
+- **Helm chart release**: the `helm-push` workflow now honors the
+  `version:` field in `Chart.yaml` instead of deriving the chart
+  version from the Git tag, and accepts a `chart-v*` tag trigger for
+  chart-only releases.
+
 ## [1.8.0] — 2026-05-20
 
 Modernization release. Brings the project up to Go 1.26.3, refreshes the
