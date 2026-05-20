@@ -85,6 +85,30 @@ Any `go.mod` change → run `go mod tidy` then `go mod vendor`.
 `vendor/` must be committed — never gitignored.
 CI uses `go build -mod=vendor`. Never `go get` inside Docker build without re-vendoring after.
 
+**`vendor/` is read-only.** Never edit files under `vendor/` by hand — not to patch a bug,
+not to silence a lint warning, not to "just try something". Upstream-only fixes:
+`go get <module>@<fixed-version>` + `go mod tidy` + `go mod vendor`. If upstream lacks
+a needed fix, fork the module, point `replace` at the fork in `go.mod`, then re-vendor.
+Hand-edits to `vendor/` get blown away on the next `go mod vendor` and silently mask
+supply-chain provenance.
+
+## Generated Code
+
+Generated sources are **read-only**. Never hand-edit files produced by a code generator:
+
+- `protoc` / `buf` outputs for gRPC + Protobuf (typically `*.pb.go`, `*_grpc.pb.go`,
+  often under `gen/`, `pb/`, or `proto/`)
+- `mockgen` / `moq` mocks
+- `sqlc`, `ent`, `gqlgen`, `wire_gen.go`, `oapi-codegen`, `swag` outputs
+- any file with a `// Code generated ... DO NOT EDIT.` header
+
+To change generated code: change the source of truth (`.proto`, `.sql`, schema, interface)
+then re-run the generator (`buf generate`, `go generate ./...`, `sqlc generate`, etc.).
+Commit the regenerated files alongside the source change in the same commit.
+
+Generated files are committed (not gitignored) so builds and reviews are reproducible.
+CI must regenerate and `git diff --exit-code` to catch drift between source + output.
+
 ## Testing & Architecture
 
 Red-Green-Refactor: failing test first, then implementation.
@@ -179,9 +203,6 @@ duration, retry count, error chain). Logs go to stdout only — shipped to Loki 
 Never log secret values, tokens, or credentials (including the KEK, DEKs, AWS credentials,
 or `x-amz-server-side-encryption-customer-key*` headers), even at DEBUG level.
 
-Note: the current codebase uses `sirupsen/logrus`. Migration to `slog` is planned; new code
-should target `slog` when feasible.
-
 ## Metrics
 
 Every service exposes a `/metrics` endpoint using `prometheus/client_golang`.
@@ -274,6 +295,47 @@ Cadence:
 - Major versions: planned, one at a time.
 
 Never let a dep fall more than 2 minor versions behind.
+
+## Documentation Coherence
+
+After any meaningful change (feature, bugfix touching public behaviour, API surface,
+config schema, CLI flags, deps with user impact): verify `README.md` + `docs/**` still
+match shipped reality before mark task done. Out-of-sync doc = task not done.
+
+Pre-release sweep (mandatory before every tag, all release levels):
+- README accurate — install steps, quickstart, examples runnable as-is.
+- All in-repo doc links + references resolve (no dead anchors, no stale paths).
+- Public API docs match shipped surface (endpoints, flags, env vars).
+- Migration notes present for breaking changes.
+- Screenshots / diagrams reflect current UI + architecture.
+- `CHANGELOG.md` matches release scope (see Changelog section).
+
+Release blocked if sweep fails. Doc fix = same MR as code change, never separate
+follow-up.
+
+## Changelog
+
+Maintain user-friendly `CHANGELOG.md` at repo root. Format: Keep-a-Changelog
+(https://keepachangelog.com/en/1.1.0/) + SemVer.
+
+Every user-visible change → entry under `## [Unreleased]` with one type:
+`Added` / `Changed` / `Deprecated` / `Removed` / `Fixed` / `Security`.
+
+Wording rules (user-facing, not commit log):
+- End-user perspective. No commit hash, no internal module name, no implementation
+  detail.
+- Bad: "refactor auth middleware to use JWT v2 lib".
+- Good: "Sessions survive backend restarts; existing tokens stay valid".
+- Breaking changes prefix `**BREAKING:**` + 1-3 line migration note.
+
+Release cut process:
+1. Rename `## [Unreleased]` → `## [X.Y.Z] - YYYY-MM-DD`.
+2. Create fresh empty `## [Unreleased]` block at top.
+3. Tag matches header version exactly (`vX.Y.Z`).
+4. Bump compare links at file bottom.
+
+Internal-only changes (refactor with zero user impact, test infra, CI config) skip
+CHANGELOG entry — but if in doubt, log under `Changed`.
 
 ## Product Validation Workflow
 
