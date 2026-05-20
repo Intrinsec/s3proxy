@@ -16,8 +16,12 @@ on:
 permissions:
   contents: read
 
-env:
-  GOFLAGS: -mod=vendor
+# NOTE: do not set `GOFLAGS: -mod=vendor` at workflow level. With a
+# committed `vendor/` directory and `go.mod` >= go 1.14, the toolchain
+# already auto-selects vendor mode for build/test/lint. Setting the env
+# var explicitly *breaks* `go install <pkg>@<version>` (used to fetch
+# govulncheck and go-licenses), which fails with:
+#   `cannot query module due to -mod=vendor`.
 
 jobs:
   lint:
