@@ -16,6 +16,18 @@ Two version streams move independently:
 
 ### Chart
 
+- **`chart/1.9.3`** — Dashboard usability + Go runtime panels.
+  - `Job` picker now defaults to **All** (`allValue: ".*s3proxy.*"`) and
+    restricts its dropdown to jobs whose name contains `s3proxy` via the
+    template `regex: /s3proxy/`. Multi-release clusters land on a
+    populated dashboard out of the box.
+  - New **Runtime (Go)** row with six panels backed by the default
+    `client_golang` collectors (already registered in s3proxy):
+    CPU usage (`process_cpu_seconds_total`), resident memory
+    (`process_resident_memory_bytes`), Go heap in use
+    (`go_memstats_heap_inuse_bytes` / `_heap_alloc_bytes`), goroutines
+    (`go_goroutines`), GC pause quantiles (`go_gc_duration_seconds`),
+    and open file descriptors (`process_open_fds`).
 - **`chart/1.9.2`** — Fix dashboard panels showing "No data". Every query
   previously filtered on `service="s3proxy"`, but the
   `ServiceMonitor`-applied label is the release-prefixed Service name
