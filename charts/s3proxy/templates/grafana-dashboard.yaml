@@ -1,6 +1,6 @@
 {{- if .Values.grafanaDashboard.enabled }}
-apiVersion: v1
-kind: ConfigMap
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
 metadata:
   name: {{ include "s3proxy.fullname" . }}-dashboard
   {{- with .Values.grafanaDashboard.namespace }}
@@ -8,7 +8,6 @@ metadata:
   {{- end }}
   labels:
     {{- include "s3proxy.labels" . | nindent 4 }}
-    {{ .Values.grafanaDashboard.label | default "grafana_dashboard" }}: "1"
     {{- with .Values.grafanaDashboard.labels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -16,7 +15,17 @@ metadata:
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-data:
-  s3proxy.json: |-
+spec:
+  allowCrossNamespaceImport: {{ .Values.grafanaDashboard.allowCrossNamespaceImport }}
+  {{- with .Values.grafanaDashboard.folder }}
+  folder: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.grafanaDashboard.resyncPeriod }}
+  resyncPeriod: {{ . }}
+  {{- end }}
+  instanceSelector:
+    matchLabels:
+      {{- toYaml .Values.grafanaDashboard.instanceSelector.matchLabels | nindent 6 }}
+  json: |-
 {{ .Files.Get "dashboards/s3proxy.json" | indent 4 }}
 {{- end }}

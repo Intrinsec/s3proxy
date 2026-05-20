@@ -46,7 +46,7 @@ The project is a hardened fork of the original [edgelesssys/constellation](https
 - **S3-compatible** — works with any backend that speaks S3 v4 (AWS, Scaleway, MinIO, Wasabi, Ceph, …).
 - **Secure defaults** — multipart uploads blocked, HTTPS upstream, request body capped, optional concurrency throttle.
 - **Production observability** — Prometheus metrics on `/metrics`, four shipped alerts, OTLP/HTTP traces with `slog` log/trace correlation, ready-to-import Grafana dashboard.
-- **Packaged Helm chart** — OCI-published, with opt-in `ServiceMonitor` / `PrometheusRule` / dashboard `ConfigMap`.
+- **Packaged Helm chart** — OCI-published, with opt-in `ServiceMonitor` / `PrometheusRule` / `GrafanaDashboard` CRD.
 
 ---
 
@@ -283,7 +283,7 @@ Top-level value keys:
 | `autoscaling` | disabled | HPA on CPU/memory. |
 | `serviceMonitor` | disabled | Prometheus Operator scrape config. |
 | `prometheusRule` | disabled | Alert bundle. |
-| `grafanaDashboard` | disabled | Dashboard `ConfigMap` (grafana-operator / sidecar). |
+| `grafanaDashboard` | disabled | `GrafanaDashboard` CRD (`grafana.integreatly.org/v1beta1`, grafana-operator). |
 
 A complete observability rollout looks like:
 
@@ -301,6 +301,10 @@ prometheusRule:
     highLatencySeconds: 2
 grafanaDashboard:
   enabled: true
+  folder: s3proxy
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
 config:
   host: s3.fr-par.scw.cloud
   otlpTracesEndpoint: https://otel-collector.observability.svc.cluster.local:4318/v1/traces

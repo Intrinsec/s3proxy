@@ -168,17 +168,23 @@ prometheusRule:
     serviceDown: 2m
     highCrashRate: 5m
 
-# Grafana dashboard ConfigMap. When enabled the chart ships a ConfigMap
-# carrying the s3proxy dashboard JSON, labeled so the grafana-operator /
-# dashboard sidecar picks it up automatically.
-# Requires either grafana-operator OR the official Grafana chart with the
-# dashboard sidecar enabled (`sidecar.dashboards.enabled=true`).
+# Grafana dashboard CRD. When enabled the chart ships a `GrafanaDashboard`
+# (`grafana.integreatly.org/v1beta1`) carrying the s3proxy dashboard JSON.
+# Requires grafana-operator to be installed in the cluster.
 grafanaDashboard:
   enabled: false
-  # namespace: monitoring                # where the ConfigMap should be created
-  label: grafana_dashboard               # label key the Grafana sidecar watches
-  labels: {}                             # extra labels on the ConfigMap
-  annotations: {}                        # extra annotations on the ConfigMap
+  # namespace: monitoring                # where the GrafanaDashboard is created
+  allowCrossNamespaceImport: true        # let a Grafana in another namespace pick it up
+  # folder: "s3proxy"                    # target folder in Grafana (empty = General)
+  # resyncPeriod: 5m                     # operator reconciliation cadence
+  # instanceSelector.matchLabels picks the target Grafana CR. Default value
+  # matches the `dashboards: grafana` selector used by the upstream
+  # grafana-operator examples. Tune to whatever label your Grafana CR carries.
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  labels: {}                             # extra labels on the GrafanaDashboard
+  annotations: {}                        # extra annotations on the GrafanaDashboard
 
 # Additional volumes on the output Deployment definition.
 extraVolumes: []
