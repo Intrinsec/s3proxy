@@ -14,39 +14,104 @@ Two version streams move independently:
 
 ## [Unreleased]
 
-### Chart
+## [1.8.0] — 2026-05-20
 
-#### Added
-- `values.schema.json`: JSON Schema (draft-07) validated automatically on
-  `helm install` / `upgrade` / `template` / `lint`. Catches the kind of
-  typo/out-of-range bug that produced the `--level=-4` default. Strict on
-  known keys (types, enums, port range, duration patterns, threshold
-  ranges 0..1 for `prometheusRule.thresholds.highErrorRate`, etc.) but
-  permissive on unknown top-level keys so user overrides still flow through.
+Modernization release. Brings the project up to Go 1.26.3, refreshes the
+entire dependency tree, replaces the logging backend, ships first-class
+observability, hardens the encryption path, and rewrites the documentation
+end-to-end.
 
-#### Changed
-- `1.8.0` → `1.8.1`: default `--level` switched from `-4` (Debug, due to a
-  legacy out-of-range value) to `0` (Info), matching the binary's documented
-  default. Verbose logging is now opt-in via `args: ["--level=-1"]`.
-- `values.yaml` heavily commented: every key annotated with its
-  `S3PROXY_*` mapping, OTLP precedence rules and example overrides. Removed a
-  duplicate `extraEnv:` key that silently shadowed the first declaration.
-- `Chart.yaml` enriched with `icon`, `home`, `sources`, `keywords` and
-  `maintainers` so the chart renders cleanly on Artifact Hub.
+### Added
+- **OpenTelemetry tracing** on every request, correlated with `slog` log
+  records via the active span ID (`internal/tracing`).
+- **Prometheus `/metrics` endpoint** with request, error, latency and
+  cache counters (`internal/monitoring`).
+- **Prometheus alert rules and a Grafana dashboard** shipped under
+  `deploy/monitoring/` for drop-in observability.
+- **`/readyz`** now actively probes the upstream S3 backend instead of
+  returning 200 unconditionally; both `/healthz` and `/readyz` bypass the
+  throttling middleware so probes survive load spikes.
+- **`Config` struct + constructor-based DI** (`internal/config`) replacing
+  the previous package-global accessors. Old getters retained as a thin
+  facade for callers not yet migrated.
+- **PutObject body cap** (`S3PROXY_PUTBODY_MAX`) to bound RAM consumption
+  per request.
+- **Opt-in startup warning** when `S3PROXY_INSECURE=1` is set, so plaintext
+  upstream is never silent.
+- **End-to-end MinIO round-trip test** behind the `e2e` build tag,
+  including a dedicated test that asserts ciphertext at rest in the
+  upstream object.
+- **CI pipeline**: unit-test coverage gating, `golangci-lint` workflow,
+  Renovate config, vendored dependencies (`-mod=vendor`).
+- **`values.schema.json`** (Helm chart): JSON Schema (draft-07) validated
+  on `helm install` / `upgrade` / `template` / `lint`. Strict on known
+  keys (types, enums, port range, duration patterns, threshold ranges
+  0..1 for `prometheusRule.thresholds.highErrorRate`, etc.) but
+  permissive on unknown top-level keys so user overrides flow through.
+- **Helm chart observability surface**: `ServiceMonitor`, `PrometheusRule`
+  and OTLP exporter env wiring exposed via `values.yaml`.
+
+### Changed
+- **Go toolchain**: `1.25.x` → **`1.26.3`** (`go.mod`, `go.work`,
+  Dockerfile build stage).
+- **Logging**: migrated from `sirupsen/logrus` to the standard-library
+  `log/slog`. Structured handler, `%w` error wrapping throughout.
+- **Encryption**: KEK derivation switched to **HKDF-SHA256**; DEK
+  wrapping uses AES-256-GCM-SIV via Tink. Crypto package renamed and
+  reorganized for clarity.
+- **AWS SDK v2** refreshed across the board: `service/s3` v1.97 → v1.101,
+  `config`, `credentials`, `sts`, `smithy-go` v1.25.1, and all transitive
+  service clients.
+- **OpenTelemetry**, **gRPC** (→ v1.81.1), **grpc-gateway** (→ v2.29.0),
+  **prometheus common/procfs**, **tink-go** (→ v2.6.0),
+  **golang.org/x/{crypto,net,sys,text}** all updated to current.
+- **`koanf` v1 → v2** (`github.com/knadh/koanf/v2`). Removes the
+  transitive `go.etcd.io/etcd@v3.5.4` dependency that pinned an old
+  `google.golang.org/genproto` and produced ambiguous-import collisions
+  against the split `genproto/googleapis/{api,rpc}` modules.
+- **HTTP client reuse**: a single shared S3 client is now reused across
+  requests with bounded upstream timeouts; redundant per-request MD5
+  computation removed from the hot path.
+- **Router**: large request/response buffers are explicitly released and
+  `runtime.FreeOSMemory()` is triggered between encryption phases to
+  keep RSS bounded under bursty PutObject load.
+- **Helm chart `1.8.0` → `1.8.1`**: default `--level` switched from `-4`
+  (Debug, due to a legacy out-of-range value) to `0` (Info), matching the
+  binary's documented default. Verbose logging is now opt-in via
+  `args: ["--level=-1"]`.
+- **Helm chart `values.yaml`** heavily commented: every key annotated
+  with its `S3PROXY_*` mapping, OTLP precedence rules and example
+  overrides. Removed a duplicate `extraEnv:` key that silently shadowed
+  the first declaration.
+- **Helm `Chart.yaml`** enriched with `icon`, `home`, `sources`,
+  `keywords` and `maintainers` so the chart renders cleanly on
+  Artifact Hub.
+
+### Fixed
+- **Upstream checksum headers** are no longer forwarded on transformed
+  (encrypted) bodies, eliminating spurious `XAmzContentSHA256Mismatch`
+  on the upstream PUT path for some backends.
+- **Multipart upload** is blocked by default to prevent accidental
+  leakage of unencrypted data.
+
+### Security
+- Crypto package hardening pass: package rename, explicit nonce
+  handling, KEK rotation via versioned metadata tag
+  (`<DEKTAG>-kek-ver`).
+- Plaintext-upstream mode (`S3PROXY_INSECURE=1`) now warns loudly at
+  startup.
 
 ### Docs
-- README rewritten end-to-end: anchored table of contents, full env var matrix,
-  CLI flags, metric/alert tables with real PromQL, OTLP tracing notes,
-  security caveats (`S3PROXY_INSECURE`, `S3PROXY_DECRYPTION_FALLBACK`,
-  multipart blocked by default), Mermaid PUT/GET sequence diagram, Helm chart
-  reference table, development workflow.
-- `CONTRIBUTING.md` refreshed: Go 1.26, vendor mode, `e2e` build tag,
-  `golangci-lint` + `govulncheck` invocations, release flow.
-
-### Performance
-- `internal/router`: release large request/response buffers and trigger
-  `runtime.FreeOSMemory()` between encryption phases to keep RSS bounded under
-  bursty PutObject load (commit `359168a`).
+- **README rewritten end-to-end**: anchored table of contents, full env
+  var matrix, CLI flags, metric/alert tables with real PromQL, OTLP
+  tracing notes, security caveats (`S3PROXY_INSECURE`,
+  `S3PROXY_DECRYPTION_FALLBACK`, multipart blocked by default), Mermaid
+  PUT/GET sequence diagram, Helm chart reference table, development
+  workflow.
+- **`CONTRIBUTING.md`** refreshed: Go 1.26, vendor mode, `e2e` build
+  tag, `golangci-lint` + `govulncheck` invocations, release flow.
+- **`AGENTS.md`** added and aligned with current iagen-dev rules
+  (API/Auth/product-validation sections, Language section).
 
 ## [1.7.2] — 2026-04-23
 
@@ -114,7 +179,8 @@ Initial published release line after the fork from
 Earlier `v1.0.0` … `v1.3.0` tags exist for the pre-fork lineage; see the Git
 log for details.
 
-[Unreleased]: https://github.com/Intrinsec/s3proxy/compare/v1.7.2...HEAD
+[Unreleased]: https://github.com/Intrinsec/s3proxy/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/Intrinsec/s3proxy/compare/v1.7.2...v1.8.0
 [1.7.2]: https://github.com/Intrinsec/s3proxy/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/Intrinsec/s3proxy/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/Intrinsec/s3proxy/compare/v1.6.0...v1.7.0
