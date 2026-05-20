@@ -117,10 +117,15 @@ jobs:
       - name: go-licenses check
         run: |
           go install github.com/google/go-licenses@latest
-          # Block forbidden (GPL family in restrictive contexts) + restricted +
-          # unknown licenses. notice/permissive/reciprocal still allowed.
+          # Block forbidden + restricted + unknown licenses across upstream
+          # dependencies. The project's own module ships under AGPL-3.0 (a
+          # "forbidden" classification in google/licenseclassifier), so we
+          # explicitly --ignore the in-tree module path; the gate is only
+          # meant to catch incompatible *upstream* licenses, not the
+          # project's chosen license. notice/permissive/reciprocal allowed.
           go-licenses check \
             --disallowed_types=forbidden,restricted,unknown \
+            --ignore=github.com/intrinsec \
             ./s3proxy/...
 
   build:
