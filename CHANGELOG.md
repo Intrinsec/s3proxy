@@ -16,6 +16,13 @@ Two version streams move independently:
 
 ### Chart
 
+- **`chart/1.9.2`** — Fix dashboard panels showing "No data". Every query
+  previously filtered on `service="s3proxy"`, but the
+  `ServiceMonitor`-applied label is the release-prefixed Service name
+  (e.g. `service="cockpit-s3proxy"`), so the filter never matched. Switch
+  every panel target and the `instance` variable query to `job=~"$job"`,
+  and add a new `Job` template variable (`label_values(http_requests_total, job)`)
+  so the dashboard picks up whatever `job` Prometheus actually emits.
 - **`chart/1.9.1`** — Make the bundled Grafana dashboard portable. Adds a
   `datasource` template variable (type `datasource`, query `prometheus`)
   so the dashboard binds to whichever Prometheus data source the target
