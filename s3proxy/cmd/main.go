@@ -11,16 +11,21 @@ Package main parses command line flags and starts the s3proxy server.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/intrinsec/s3proxy/internal/config"
+	"github.com/intrinsec/s3proxy/internal/monitoring"
 	"github.com/intrinsec/s3proxy/internal/router"
-	logger "github.com/sirupsen/logrus"
+	"github.com/intrinsec/s3proxy/internal/tracing"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 const (
@@ -34,82 +39,133 @@ const (
 	defaultCertLocation = "/etc/s3proxy/certs"
 	// defaultLogLevel is the default log level.
 	defaultLogLevel = 0
+	// serviceName identifies the proxy in traces and logs.
+	serviceName = "s3proxy"
+	// serviceVersion is the build version exposed on OTel traces.
+	serviceVersion = "dev"
 )
 
+// logLevelVar controls the minimum log level at runtime.
+var logLevelVar = new(slog.LevelVar)
+
 func main() {
+	log := newLogger()
+
 	flags, err := parseFlags()
 	if err != nil {
-		panic(err)
+		fatal(log, "parsing flags", err)
 	}
 
-	// logLevel can be made a public variable so logging level can be changed dynamically.
-	// TODO (derpsteb): enable once we are on go 1.21.
-	// logLevel := new(slog.LevelVar)
-	// handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})
-	// logger := slog.New(handler)
-	// logLevel.Set(flags.logLevel)
+	setLogLevel(flags.logLevel)
 
-	log := logger.New()
-	// log.SetFormatter(&logger.JSONFormatter{})
-	switch {
-	case flags.logLevel <= -1:
-		log.SetLevel(logger.DebugLevel)
-	case flags.logLevel == 0:
-		log.SetLevel(logger.InfoLevel)
-	case flags.logLevel == 1:
-		log.SetLevel(logger.WarnLevel)
-	case flags.logLevel >= 2:
-		log.SetLevel(logger.ErrorLevel)
-	default:
-		log.SetLevel(logger.InfoLevel)
+	cfg, err := config.Load()
+	if err != nil {
+		fatal(log, "loading configuration", err)
 	}
 
+	if err := cfg.Validate(); err != nil {
+		fatal(log, "configuration validation failed", err)
+	}
+
+	// Keep the default global Config populated for legacy call sites during the
+	// transition to DI-based access.
 	if err := config.LoadConfig(); err != nil {
-		panic(err)
-	}
-
-	// Validate configuration at startup
-	if err := config.ValidateConfiguration(); err != nil {
-		log.WithError(err).Fatal("configuration validation failed")
+		fatal(log, "populating default config", err)
 	}
 
 	if flags.forwardMultipartReqs {
 		log.Warn("configured to forward multipart uploads, this may leak data to AWS")
 	}
 
-	if err := runServer(flags, log); err != nil {
-		panic(err)
+	if cfg.Insecure() {
+		log.Warn("S3PROXY_INSECURE=1: upstream S3 traffic will use plaintext HTTP. Do NOT use in production; for local/test/demo purposes only")
+	}
+
+	ctx := context.Background()
+	shutdownTracing, err := tracing.Setup(ctx, serviceName, serviceVersion)
+	if err != nil {
+		fatal(log, "setting up tracing", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Error("shutting down tracing", "error", err)
+		}
+	}()
+
+	if err := runServer(flags, cfg, log); err != nil {
+		fatal(log, "running server", err)
 	}
 }
 
-func runServer(flags cmdFlags, log *logger.Logger) error {
-	log.WithField("ip", flags.ip).WithField("port", defaultPort).WithField("region", flags.region).Info("listening")
+// newLogger builds a JSON slog.Logger writing to stdout with a common service attribute.
+// The handler is wrapped so active trace/span IDs from the request context are emitted alongside log records.
+func newLogger() *slog.Logger {
+	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevelVar})
+	return slog.New(tracing.NewSpanContextHandler(base)).With("service", serviceName)
+}
 
-	routerInstance, err := router.New(flags.region, flags.forwardMultipartReqs, log)
+func fatal(log *slog.Logger, msg string, err error) {
+	log.Error(msg, "error", err)
+	os.Exit(1)
+}
+
+func setLogLevel(level int) {
+	switch {
+	case level <= -1:
+		logLevelVar.Set(slog.LevelDebug)
+	case level == 1:
+		logLevelVar.Set(slog.LevelWarn)
+	case level >= 2:
+		logLevelVar.Set(slog.LevelError)
+	default:
+		logLevelVar.Set(slog.LevelInfo)
+	}
+}
+
+func runServer(flags cmdFlags, cfg *config.Config, log *slog.Logger) error {
+	log.Info("listening", "ip", flags.ip, "port", defaultPort, "region", flags.region)
+
+	metrics := monitoring.New()
+
+	routerInstance, err := router.New(context.Background(), flags.region, flags.forwardMultipartReqs, log, metrics)
 	if err != nil {
 		return fmt.Errorf("creating router: %w", err)
 	}
 
-	h := http.HandlerFunc(routerInstance.Serve)
-	hMdw := h
+	mux := http.NewServeMux()
+	mux.Handle(monitoring.MetricsPath, metrics.Handler())
+	mux.HandleFunc("/", routerInstance.Serve)
 
-	throttling := config.GetThrottlingRequestsMax()
+	var inner http.Handler = mux
+
+	throttling := cfg.ThrottlingRequestsMax()
 	if throttling != 0 {
-		log.WithField("throttling_requestsmax", throttling).Info("Throttling is enable")
-		throttler := router.NewThrottlingMiddleware(throttling, 10*time.Second)
-		// Explicitly convert h to http.Handler so it can be used with Throttle
-		hMdw = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if isHealthCheckRequest(r) {
-				h.ServeHTTP(w, r)
+		log.Info("Throttling is enable", "throttling_requestsmax", throttling)
+		throttler := router.NewThrottlingMiddleware(throttling, 10*time.Second, metrics)
+		base := inner
+		// Health checks and /metrics bypass throttling so that liveness/readiness and
+		// monitoring stay observable under overload.
+		inner = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isHealthCheckRequest(r) || r.URL.Path == monitoring.MetricsPath {
+				base.ServeHTTP(w, r)
 				return
 			}
-			throttler.Throttle(h).ServeHTTP(w, r)
+			throttler.Throttle(base).ServeHTTP(w, r)
 		})
 	}
 
+	hMdw := otelhttp.NewHandler(metrics.Instrument(inner), "s3proxy.http.serve",
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+			return r.Method + " " + monitoring.RouteLabel(r.URL.Path)
+		}),
+	)
+
 	server := http.Server{
-		Addr:    fmt.Sprintf("%s:%d", flags.ip, defaultPort),
-		Handler: hMdw,
+		Addr:              fmt.Sprintf("%s:%d", flags.ip, defaultPort),
+		Handler:           hMdw,
+		ReadHeaderTimeout: 10 * time.Second,
 		// Disable HTTP/2. Serving HTTP/2 will cause some clients to use HTTP/2.
 		// It seems like AWS S3 does not support HTTP/2.
 		// Having HTTP/2 enabled will at least cause the aws-sdk-go V1 copy-object operation to fail.
@@ -128,11 +184,17 @@ func runServer(flags cmdFlags, log *logger.Logger) error {
 		}
 
 		// TLSConfig is populated, so we can safely pass empty strings to ListenAndServeTLS.
-		return server.ListenAndServeTLS("", "")
+		if err := server.ListenAndServeTLS("", ""); err != nil {
+			return fmt.Errorf("listen and serve TLS: %w", err)
+		}
+		return nil
 	}
 
 	log.Warn("TLS is disabled")
-	return server.ListenAndServe()
+	if err := server.ListenAndServe(); err != nil {
+		return fmt.Errorf("listen and serve: %w", err)
+	}
+	return nil
 }
 
 func isHealthCheckRequest(r *http.Request) bool {
@@ -144,7 +206,6 @@ func parseFlags() (cmdFlags, error) {
 	ip := flag.String("ip", defaultIP, "ip to listen on")
 	region := flag.String("region", defaultRegion, "AWS region in which target bucket is located")
 	certLocation := flag.String("cert", defaultCertLocation, "location of TLS certificate")
-	kmsEndpoint := flag.String("kms", "key-service.kube-system:9000", "endpoint of the KMS service to get key encryption keys from")
 	forwardMultipartReqs := flag.Bool("allow-multipart", false, "forward multipart requests to the target bucket; beware: this may store unencrypted data on AWS. See the documentation for more information")
 	level := flag.Int("level", defaultLogLevel, "log level")
 
@@ -155,18 +216,11 @@ func parseFlags() (cmdFlags, error) {
 		return cmdFlags{}, fmt.Errorf("not a valid IPv4 address: %s", *ip)
 	}
 
-	// TODO(derpsteb): enable once we are on go 1.21.
-	// logLevel := new(slog.Level)
-	// if err := logLevel.UnmarshalText([]byte(*level)); err != nil {
-	// 	return cmdFlags{}, fmt.Errorf("parsing log level: %w", err)
-	// }
-
 	return cmdFlags{
 		noTLS:                *noTLS,
 		ip:                   netIP.String(),
 		region:               *region,
 		certLocation:         *certLocation,
-		kmsEndpoint:          *kmsEndpoint,
 		forwardMultipartReqs: *forwardMultipartReqs,
 		logLevel:             *level,
 	}, nil
@@ -177,9 +231,6 @@ type cmdFlags struct {
 	ip                   string
 	region               string
 	certLocation         string
-	kmsEndpoint          string
 	forwardMultipartReqs bool
-	// TODO(derpsteb): enable once we are on go 1.21.
-	// logLevel slog.Level
-	logLevel int
+	logLevel             int
 }

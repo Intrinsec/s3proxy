@@ -1,0 +1,213 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "s3proxy Helm chart values",
+  "description": "Schema for charts/s3proxy/values.yaml. Strict on known keys, permissive on unknown keys so operators can add custom overrides without forking the chart.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of replicas. Ignored when autoscaling.enabled is true."
+    },
+    "deploymentStrategy": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": { "type": "string", "enum": ["RollingUpdate", "Recreate"] }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": ["string", "null"] },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      },
+      "required": ["repository", "pullPolicy"]
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": { "name": { "type": "string" } },
+        "required": ["name"]
+      }
+    },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "args": {
+      "type": "array",
+      "description": "CLI flags passed to the s3proxy binary. --level must be one of -1 (Debug), 0 (Info), 1 (Warn), 2 (Error).",
+      "items": {
+        "type": "string",
+        "if": { "pattern": "^--level(=|$)" },
+        "then": { "pattern": "^--level=(-1|0|1|2)$" }
+      }
+    },
+    "cert": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enable": { "type": "boolean" },
+        "issuerRefKind": { "type": "string", "enum": ["ClusterIssuer", "Issuer"] },
+        "issuerRefName": { "type": "string" },
+        "commonName": { "type": "string" }
+      },
+      "required": ["enable"]
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Maps onto S3PROXY_* env vars on the container. host is required at runtime; the chart does not enforce it so users relying on extraEnv can still install.",
+      "properties": {
+        "host": { "type": "string", "minLength": 1, "description": "S3PROXY_HOST upstream endpoint." },
+        "throttling": {
+          "type": ["integer", "string"],
+          "description": "S3PROXY_THROTTLING_REQUESTSMAX. Concurrent in-flight cap (not RPS). 0 disables."
+        },
+        "accessKey": { "type": "string" },
+        "secretKey": { "type": "string" },
+        "encryptKey": { "type": "string", "description": "S3PROXY_ENCRYPT_KEY KEK seed. High-entropy ≥32 bytes recommended." },
+        "otlpEndpoint": { "type": "string", "format": "uri" },
+        "otlpTracesEndpoint": { "type": "string", "format": "uri" },
+        "otlpHeaders": { "type": "string" }
+      }
+    },
+    "extraEnv": {
+      "type": "array",
+      "description": "Append-only env vars. Use for S3PROXY_* knobs not exposed in `config`.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "value": {
+            "type": "string",
+            "description": "Kubernetes only accepts string env values. Wrap numbers/bools in quotes."
+          },
+          "valueFrom": { "type": "object" }
+        },
+        "required": ["name"],
+        "oneOf": [
+          { "required": ["value"] },
+          { "required": ["valueFrom"] }
+        ]
+      }
+    },
+    "valsSecret": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+    "podSecurityContext": { "type": "object" },
+    "securityContext": { "type": "object" },
+    "service": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"] },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      },
+      "required": ["type", "port"]
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" }
+      },
+      "required": ["enabled"]
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "livenessProbe": { "type": "object" },
+    "readinessProbe": { "type": "object" },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "targetMemoryUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 }
+      },
+      "required": ["enabled"]
+    },
+    "serviceMonitor": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Opt-in Prometheus Operator ServiceMonitor.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "namespace": { "type": "string" },
+        "interval": { "type": "string", "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$" },
+        "scrapeTimeout": { "type": "string", "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$" },
+        "path": { "type": "string", "pattern": "^/" },
+        "scheme": { "type": "string", "enum": ["http", "https"] },
+        "labels": { "type": "object" },
+        "tlsConfig": { "type": "object" },
+        "relabelings": { "type": "array" },
+        "metricRelabelings": { "type": "array" }
+      },
+      "required": ["enabled"]
+    },
+    "prometheusRule": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Opt-in PrometheusRule with the four s3proxy alerts.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "namespace": { "type": "string" },
+        "labels": { "type": "object" },
+        "thresholds": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "highErrorRate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Fraction of 5xx responses (0..1). 0.05 = 5%."
+            },
+            "highLatencySeconds": { "type": "number", "minimum": 0 },
+            "crashes": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "for": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "highErrorRate": { "type": "string", "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$" },
+            "highLatency": { "type": "string", "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$" },
+            "serviceDown": { "type": "string", "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$" },
+            "highCrashRate": { "type": "string", "pattern": "^([0-9]+(ns|us|µs|ms|s|m|h))+$" }
+          }
+        }
+      },
+      "required": ["enabled"]
+    },
+    "grafanaDashboard": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Opt-in ConfigMap shipping the bundled Grafana dashboard.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "namespace": { "type": "string" },
+        "label": { "type": "string", "minLength": 1 },
+        "labels": { "type": "object" },
+        "annotations": { "type": "object" }
+      },
+      "required": ["enabled"]
+    },
+    "extraVolumes": { "type": "array" },
+    "extraVolumeMounts": { "type": "array" },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" }
+  }
+}

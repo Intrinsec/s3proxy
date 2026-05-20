@@ -15,9 +15,23 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# Can add "--no-tls" if you don't want TLS
-# By default, listenning TLS with files /etc/s3proxy/certs/s3proxy.crt & /etc/s3proxy/certs/s3proxy.key
-args: ["--level=-4"]
+# CLI flags passed to the s3proxy binary.
+# --level controls the slog level:
+#     -1 => Debug   (verbose, includes request/response details — use for troubleshooting only)
+#      0 => Info    (default, recommended for production)
+#      1 => Warn
+#      2 => Error
+# Other flags:
+#   --no-tls           disable TLS, listen plain HTTP on port 80
+#                      (default: listen TLS using /etc/s3proxy/certs/s3proxy.{crt,key})
+#   --allow-multipart  forward multipart uploads to AWS (WARNING: leaks unencrypted data)
+#   --region <r>       AWS region for the target bucket (default: eu-west-1)
+#   --ip <addr>        bind address (default: 0.0.0.0)
+#   --cert <path>      TLS cert directory (default: /etc/s3proxy/certs)
+#
+# Example for debug logs:
+#   args: ["--level=-1"]
+args: ["--level=0"]
 
 cert: # From CertManager CRD
   enable: false
@@ -25,12 +39,42 @@ cert: # From CertManager CRD
   # issuerRefName: internal-company-com
   # commonName: "*.s3proxy.internal.company.com"
 
+# s3proxy runtime config exposed as S3PROXY_* env vars on the container.
 config:
+  # S3PROXY_HOST — upstream S3 endpoint hostname (required).
   host: s3.us-east-1.amazonaws.com
+
+  # S3PROXY_THROTTLING_REQUESTSMAX — max concurrent in-flight requests (0 or unset = disabled).
   # throttling: 5
+
+  # AWS credentials and KEK seed. Plumbed into the `s3proxy` Secret. Prefer
+  # valsSecret (below) to source these from Vault / external secret managers.
   # accessKey: CHANGEME
   # secretKey: CHANGEME
   # encryptKey: CHANGEME
+
+  # OpenTelemetry OTLP/HTTP tracing. Leave unset to disable trace export.
+  # Either otlpEndpoint OR otlpTracesEndpoint must be set to activate tracing
+  # (see internal/tracing/tracing.go). otlpTracesEndpoint takes precedence
+  # when both are set.
+  # otlpEndpoint: https://otel-collector.observability.svc.cluster.local:4318
+  # otlpTracesEndpoint: https://otel-collector.observability.svc.cluster.local:4318/v1/traces
+  # otlpHeaders: "authorization=Bearer CHANGEME"
+
+# Extra environment variables appended to the container env.
+# Use for less-common S3PROXY_* knobs not exposed in `config` above:
+#   S3PROXY_INSECURE=1            — plain HTTP upstream (DEV/E2E ONLY, never prod)
+#   S3PROXY_PUTBODY_MAX=<bytes>   — PutObject body cap (default ~5 MiB; max = MaxObjectSize)
+#   S3PROXY_DECRYPTION_FALLBACK=1 — retry GetObject with all-zero KEK on decrypt failure
+#                                   (one-shot migration away from unencrypted objects; off in steady state)
+#   S3PROXY_DEKTAG_NAME=<name>    — S3 metadata key for the encrypted DEK (default "isec")
+#   S3PROXY_DEKTAG_KEKVER=<name>  — S3 metadata key for the KEK version (default "<dektag>-kek-ver")
+extraEnv: []
+# - name: S3PROXY_DECRYPTION_FALLBACK
+#   value: "true"
+# - name: S3PROXY_PUTBODY_MAX
+#   value: "10485760"  # 10 MiB
+
 valsSecret: {}
 #   accessKey: ref+vault://s3proxy/secrets/access-key
 #   secretKey: ref+vault://s3proxy/secrets/secret-key
@@ -38,10 +82,6 @@ valsSecret: {}
 
 podAnnotations: {}
 podLabels: {}
-
-extraEnv: []
-# - name: S3PROXY_DECRYPTION_FALLBACK
-#   value: "true"
 
 podSecurityContext: {}
   # fsGroup: 2000
@@ -86,6 +126,59 @@ autoscaling:
   maxReplicas: 5
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: 70
+
+# ServiceMonitor for the Prometheus Operator. Scrapes /metrics on the service.
+# Requires the monitoring.coreos.com/v1 CRD (kube-prometheus-stack / prom-operator).
+# To enable: set enabled=true and ensure the Prometheus instance selects this
+# ServiceMonitor's labels (see `labels:` below — typically `release: kube-prometheus-stack`).
+serviceMonitor:
+  enabled: false
+  # namespace: monitoring        # override target namespace (defaults to release namespace)
+  interval: 30s                  # scrape interval
+  scrapeTimeout: 10s
+  path: /metrics
+  # scheme: https                # flip to http when running with --no-tls
+  labels: {}
+  # labels:
+  #   release: kube-prometheus-stack   # common selector used by the kube-prom-stack chart
+  # tlsConfig is needed when metrics are served over the same TLS as S3 traffic.
+  # Set insecureSkipVerify=false and provide a CA when scraping with a trusted cert.
+  tlsConfig:
+    insecureSkipVerify: true
+  relabelings: []                # raw target relabeling
+  metricRelabelings: []          # post-scrape metric relabeling (drop noisy metrics, etc.)
+
+# PrometheusRule bundles the s3proxy alert rules (HighErrorRate, HighLatency,
+# ServiceDown, HighCrashRate). Requires the monitoring.coreos.com/v1 CRD.
+# Tune thresholds + `for` windows per environment — e.g. lower `highLatencySeconds`
+# for latency-sensitive deployments, raise `for.serviceDown` to avoid flapping pages.
+prometheusRule:
+  enabled: false
+  # namespace: monitoring
+  labels: {}
+  # labels:
+  #   release: kube-prometheus-stack   # selector for the Prometheus instance
+  thresholds:
+    highErrorRate: 0.05          # fraction of 5xx responses → alert when >5%
+    highLatencySeconds: 2        # p99 latency seconds → alert when >2s
+    crashes: 0                   # container restart count → alert when >0
+  for:
+    highErrorRate: 10m           # sustained window before firing
+    highLatency: 10m
+    serviceDown: 2m
+    highCrashRate: 5m
+
+# Grafana dashboard ConfigMap. When enabled the chart ships a ConfigMap
+# carrying the s3proxy dashboard JSON, labeled so the grafana-operator /
+# dashboard sidecar picks it up automatically.
+# Requires either grafana-operator OR the official Grafana chart with the
+# dashboard sidecar enabled (`sidecar.dashboards.enabled=true`).
+grafanaDashboard:
+  enabled: false
+  # namespace: monitoring                # where the ConfigMap should be created
+  label: grafana_dashboard               # label key the Grafana sidecar watches
+  labels: {}                             # extra labels on the ConfigMap
+  annotations: {}                        # extra annotations on the ConfigMap
 
 # Additional volumes on the output Deployment definition.
 extraVolumes: []

@@ -1,0 +1,24 @@
+load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("//bazel/go:go_test.bzl", "go_test")
+
+go_library(
+    name = "cryptoutil",
+    srcs = ["cryptoutil.go"],
+    importpath = "github.com/intrinsec/s3proxy/internal/cryptoutil",
+    visibility = ["//s3proxy:__subpackages__"],
+    deps = [
+        "@com_github_tink_crypto_tink_go_v2//aead/subtle",
+        "@com_github_tink_crypto_tink_go_v2//kwp/subtle",
+        "@com_github_tink_crypto_tink_go_v2//subtle/random",
+    ],
+)
+
+go_test(
+    name = "cryptoutil_test",
+    srcs = ["cryptoutil_test.go"],
+    embed = [":cryptoutil"],
+    deps = [
+        "@com_github_stretchr_testify//assert",
+        "@com_github_stretchr_testify//require",
+    ],
+)

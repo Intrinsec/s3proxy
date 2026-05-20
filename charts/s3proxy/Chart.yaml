@@ -1,8 +1,22 @@
 apiVersion: v2
 name: s3proxy
-description: A Helm chart for use s3proxy in K8s
+description: Transparent AES-256-GCM encryption proxy for any S3-compatible backend.
+icon: https://github.com/Intrinsec.png
+home: https://github.com/Intrinsec/s3proxy
+sources:
+  - https://github.com/Intrinsec/s3proxy
+keywords:
+  - s3
+  - proxy
+  - encryption
+  - aes-256-gcm
+  - kms
+  - security
+maintainers:
+  - name: Intrinsec
+    url: https://github.com/Intrinsec
 annotations:
   org.opencontainers.image.source: "https://github.com/intrinsec/s3proxy/"
 type: application
-version: 1.7.2
-appVersion: "1.7.2"
+version: 1.8.1
+appVersion: "1.8.0"
