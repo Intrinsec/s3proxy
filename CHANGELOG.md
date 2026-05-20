@@ -16,6 +16,14 @@ Two version streams move independently:
 
 ### Chart
 
+#### Added
+- `values.schema.json`: JSON Schema (draft-07) validated automatically on
+  `helm install` / `upgrade` / `template` / `lint`. Catches the kind of
+  typo/out-of-range bug that produced the `--level=-4` default. Strict on
+  known keys (types, enums, port range, duration patterns, threshold
+  ranges 0..1 for `prometheusRule.thresholds.highErrorRate`, etc.) but
+  permissive on unknown top-level keys so user overrides still flow through.
+
 #### Changed
 - `1.8.0` → `1.8.1`: default `--level` switched from `-4` (Debug, due to a
   legacy out-of-range value) to `0` (Info), matching the binary's documented
