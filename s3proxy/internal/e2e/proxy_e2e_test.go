@@ -101,7 +101,8 @@ func TestProxyRoundtripAgainstMinio(t *testing.T) {
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	metrics := monitoring.New()
 
-	routerInstance, err := router.New(ctx, "us-east-1", false, log, metrics)
+	// nil multipart manager: this test exercises only the single-shot PutObject path.
+	routerInstance, err := router.New(ctx, "us-east-1", false, nil, log, metrics)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()

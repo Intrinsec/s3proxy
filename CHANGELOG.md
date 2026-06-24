@@ -14,6 +14,31 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+### Added
+
+- **Buffered multipart uploads** (opt-in via `S3PROXY_MULTIPART_BUFFER_DIR`).
+  s3proxy now accepts the full multipart protocol, buffers each part to a
+  node-local disk directory, and on `CompleteMultipartUpload` concatenates the
+  parts, encrypts the whole object through the existing AES-256-GCM envelope
+  path, and stores it upstream as a **single ciphertext PutObject** — so data at
+  rest stays encrypted (unlike `--allow-multipart`, which forwards plaintext).
+  - New `internal/multipart` disk-buffer session manager with a background
+    sweeper that evicts idle uploads past `S3PROXY_MULTIPART_TTL` (default 24h)
+    and reclaims orphaned directories left by a restart.
+  - New config knobs: `S3PROXY_MULTIPART_BUFFER_DIR` (enables the mode),
+    `S3PROXY_MULTIPART_MAX_SIZE` (assembled-object cap, default/hard cap 5 GiB),
+    `S3PROXY_MULTIPART_TTL`. Mutually exclusive with `--allow-multipart`.
+  - New metrics: `s3proxy_multipart_uploads_active`,
+    `s3proxy_multipart_buffer_bytes`, `s3proxy_multipart_parts_total`,
+    `s3proxy_multipart_completed_total`, `s3proxy_multipart_aborted_total`,
+    `s3proxy_multipart_assemble_duration_seconds`; Grafana dashboard row and two
+    `PrometheusRule` alerts (`S3ProxyMultipartBufferHigh`,
+    `S3ProxyMultipartUploadsStuck`).
+  - **Constraints (documented):** single-instance / session-affinity required
+    (buffers are node-local), assembled object must fit in RAM (~2× peak),
+    `ListParts` unsupported. `Complete` acks only after the upstream store
+    succeeds, inheriting the single-shot path's durability ordering.
+
 ### Chart
 
 - **`chart/1.9.3`** — Dashboard usability + Go runtime panels.

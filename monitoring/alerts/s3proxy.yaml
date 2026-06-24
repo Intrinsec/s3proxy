@@ -59,3 +59,36 @@ groups:
             service_crashes_total has increased in the last 5 minutes, meaning
             the HTTP middleware recovered from at least one panic. Inspect
             recent logs for stack traces and root-cause the failure.
+
+      - alert: S3ProxyMultipartBufferHigh
+        expr: |
+          s3proxy_multipart_buffer_bytes{service="s3proxy"} > 10737418240
+        for: 15m
+        labels:
+          severity: warning
+          service: s3proxy
+        annotations:
+          summary: "s3proxy multipart buffer above 10 GiB"
+          description: |
+            On-disk multipart buffer usage has stayed above 10 GiB for 15
+            minutes. Buffered parts live on node-local disk until their upload
+            completes or its TTL expires; sustained growth risks disk
+            exhaustion. Check for stuck/abandoned uploads and the buffer-dir
+            free space.
+
+      - alert: S3ProxyMultipartUploadsStuck
+        expr: |
+          min_over_time(s3proxy_multipart_uploads_active{service="s3proxy"}[2h]) > 0
+        for: 15m
+        labels:
+          severity: warning
+          service: s3proxy
+        annotations:
+          summary: "s3proxy has multipart uploads buffered for over 2h"
+          description: |
+            At least one buffered multipart upload has stayed in-flight for
+            more than 2 hours without completing or aborting. Buffers are
+            node-local, so this usually means orphaned sessions (a client that
+            never sent CompleteMultipartUpload, or parts routed to the wrong
+            instance without session affinity). They are reclaimed at the
+            configured TTL; investigate before disk fills.
