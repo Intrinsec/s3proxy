@@ -506,3 +506,19 @@ func (r Router) incError(class string) {
 	}
 	r.metrics.ErrorsTotal.WithLabelValues(class).Inc()
 }
+
+// incMultipartCompleted is a nil-safe helper to bump MultipartCompletedTotal.
+func (r Router) incMultipartCompleted() {
+	if r.metrics == nil {
+		return
+	}
+	r.metrics.MultipartCompletedTotal.Inc()
+}
+
+// incMultipartAborted is a nil-safe helper to bump MultipartAbortedTotal.
+func (r Router) incMultipartAborted() {
+	if r.metrics == nil {
+		return
+	}
+	r.metrics.MultipartAbortedTotal.Inc()
+}

@@ -13,6 +13,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/monitoring"
+	"github.com/intrinsec/s3proxy/internal/multipart"
 	"github.com/intrinsec/s3proxy/internal/router"
 	"github.com/intrinsec/s3proxy/internal/tracing"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -129,9 +131,14 @@ func runServer(flags cmdFlags, cfg *config.Config, log *slog.Logger) error {
 
 	metrics := monitoring.New()
 
-	// Buffer-mode multipart (the *multipart.Manager) is wired in a later phase; nil
+	// Buffer-mode multipart is opt-in via S3PROXY_MULTIPART_BUFFER_DIR. A nil manager
 	// keeps multipart blocked by default unless --allow-multipart forwards it.
-	routerInstance, err := router.New(context.Background(), flags.region, flags.forwardMultipartReqs, nil, log, metrics)
+	multipartManager, err := newMultipartManager(flags, cfg, log, metrics)
+	if err != nil {
+		return err
+	}
+
+	routerInstance, err := router.New(context.Background(), flags.region, flags.forwardMultipartReqs, multipartManager, log, metrics)
 	if err != nil {
 		return fmt.Errorf("creating router: %w", err)
 	}
@@ -197,6 +204,32 @@ func runServer(flags cmdFlags, cfg *config.Config, log *slog.Logger) error {
 		return fmt.Errorf("listen and serve: %w", err)
 	}
 	return nil
+}
+
+// newMultipartManager builds the disk-buffer multipart Manager when
+// S3PROXY_MULTIPART_BUFFER_DIR is set, starting its background cleanup goroutine.
+// It returns a nil Manager (multipart stays blocked/forwarded) when the dir is
+// unset. Buffer mode and --allow-multipart are mutually exclusive.
+func newMultipartManager(flags cmdFlags, cfg *config.Config, log *slog.Logger, metrics *monitoring.Metrics) (*multipart.Manager, error) {
+	dir := cfg.MultipartBufferDir()
+	if dir == "" {
+		return nil, nil
+	}
+	if flags.forwardMultipartReqs {
+		return nil, errors.New("S3PROXY_MULTIPART_BUFFER_DIR and --allow-multipart are mutually exclusive")
+	}
+
+	manager, err := multipart.NewManager(dir, cfg.MultipartMaxSize(), cfg.MultipartTTL(), log, metrics)
+	if err != nil {
+		return nil, fmt.Errorf("creating multipart manager: %w", err)
+	}
+
+	go manager.Cleanup(context.Background())
+
+	log.Warn("multipart buffer mode enabled: buffers are node-local, so every part of an upload must reach this same instance (single-instance / session-affinity required)",
+		"buffer_dir", dir, "max_size_bytes", cfg.MultipartMaxSize(), "ttl", cfg.MultipartTTL())
+
+	return manager, nil
 }
 
 func isHealthCheckRequest(r *http.Request) bool {

@@ -192,6 +192,7 @@ func (r Router) handleCompleteMultipartUpload(client s3Client, key, bucket strin
 		if err := r.multipart.Abort(uploadID); err != nil {
 			log.Warn("CompleteMultipartUpload cleaning up buffer", "upload_id", uploadID, "error", err)
 		}
+		r.incMultipartCompleted()
 
 		etag := ""
 		if output.ETag != nil {
@@ -218,6 +219,7 @@ func (r Router) handleAbortMultipartUpload() http.HandlerFunc {
 			http.Error(w, "failed to abort multipart upload", http.StatusInternalServerError)
 			return
 		}
+		r.incMultipartAborted()
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
