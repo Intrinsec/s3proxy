@@ -129,7 +129,9 @@ func runServer(flags cmdFlags, cfg *config.Config, log *slog.Logger) error {
 
 	metrics := monitoring.New()
 
-	routerInstance, err := router.New(context.Background(), flags.region, flags.forwardMultipartReqs, log, metrics)
+	// Buffer-mode multipart (the *multipart.Manager) is wired in a later phase; nil
+	// keeps multipart blocked by default unless --allow-multipart forwards it.
+	routerInstance, err := router.New(context.Background(), flags.region, flags.forwardMultipartReqs, nil, log, metrics)
 	if err != nil {
 		return fmt.Errorf("creating router: %w", err)
 	}
