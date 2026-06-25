@@ -14,6 +14,57 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+### Added
+
+- **Buffered multipart uploads** (opt-in via `S3PROXY_MULTIPART_BUFFER_DIR`).
+  s3proxy now accepts the full multipart protocol, buffers each part to a
+  node-local disk directory, and on `CompleteMultipartUpload` concatenates the
+  parts, encrypts the whole object through the existing AES-256-GCM envelope
+  path, and stores it upstream as a **single ciphertext PutObject** — so data at
+  rest stays encrypted (unlike `--allow-multipart`, which forwards plaintext).
+  - New `internal/multipart` disk-buffer session manager with a background
+    sweeper that evicts idle uploads past `S3PROXY_MULTIPART_TTL` (default 24h)
+    and reclaims orphaned directories left by a restart.
+  - New config knobs: `S3PROXY_MULTIPART_BUFFER_DIR` (enables the mode),
+    `S3PROXY_MULTIPART_MAX_SIZE` (assembled-object cap, default/hard cap 5 GiB),
+    `S3PROXY_MULTIPART_TTL`. Mutually exclusive with `--allow-multipart`.
+  - New metrics: `s3proxy_multipart_uploads_active`,
+    `s3proxy_multipart_buffer_bytes`, `s3proxy_multipart_parts_total`,
+    `s3proxy_multipart_completed_total`, `s3proxy_multipart_aborted_total`,
+    `s3proxy_multipart_assemble_duration_seconds`; Grafana dashboard row and two
+    `PrometheusRule` alerts (`S3ProxyMultipartBufferHigh`,
+    `S3ProxyMultipartUploadsStuck`).
+  - **Constraints (documented):** single-instance / session-affinity required
+    (buffers are node-local), assembled object must fit in RAM (~2× peak),
+    `ListParts` unsupported. `Complete` acks only after the upstream store
+    succeeds, inheriting the single-shot path's durability ordering.
+- `ListObjects`/`ListObjectsV2` responses now report the **decrypted plaintext
+  size** of each object instead of the larger at-rest ciphertext size. The proxy
+  intercepts bucket-level list requests, subtracts the fixed 28-byte encryption
+  overhead (12-byte nonce + 16-byte GCM tag) from every `<Size>`, and clamps at 0.
+  Bucket sub-resource GETs (acl, versioning, multipart listings, `?versions`, …)
+  are still forwarded unchanged.
+  - *Known limitation:* objects **not** written through the proxy (legacy
+    plaintext, server-side copies, multipart) are reported 28 bytes short (or 0
+    after clamp), since a list response carries no per-object encryption metadata.
+
+### Fixed
+- **s3cmd `get` compatibility**: intercepted `GetObject` responses now
+  carry a `Content-Length` header reflecting the decrypted body size.
+  Previously the proxy streamed decrypted objects without a length, so
+  Go fell back to chunked transfer encoding and s3cmd 2.4.0 downloaded
+  an empty file. Downloads now complete with the correct size.
+- **`GetObject` returns the plaintext ETag.** Intercepted GETs decrypt the
+  body but previously returned the upstream ETag, which S3 computes over the
+  ciphertext at rest. Clients (or SDKs) that validate the body against the
+  ETag, or cache by it, saw a mismatch. The proxy now overrides the response
+  ETag with `md5(plaintext)` — the ETag S3 would have produced for the
+  unencrypted object — computed on the fly from the buffer already held in
+  memory, so no stored metadata or migration is needed. Pass-through objects
+  (no DEK tag) keep the upstream ETag, which already describes the delivered
+  bytes. PUT-response and HEAD ETags still reflect the ciphertext and remain
+  a known consistency gap.
+
 ### Chart
 
 - **`chart/1.9.3`** — Dashboard usability + Go runtime panels.

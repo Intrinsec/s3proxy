@@ -8,11 +8,13 @@ package router
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/hex"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -196,6 +198,78 @@ func TestGetObjectUsesRouterKEK(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "secret payload", rec.Body.String())
+}
+
+func TestGetObjectSetsPlaintextContentLength(t *testing.T) {
+	keks := newTestKEKs(t, "expected encryption key")
+	version, curKEK := keks.Current()
+	client := newEncryptedGetObjectClient(t, curKEK, version, []byte("secret payload"))
+	router := Router{keks: keks, log: testLogger()}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	// The header must reflect the plaintext length, not the +28-byte ciphertext.
+	assert.Equal(t, strconv.Itoa(len("secret payload")), rec.Result().Header.Get("Content-Length"))
+}
+
+func TestGetObjectSetsZeroContentLengthForEmptyObject(t *testing.T) {
+	keks := newTestKEKs(t, "expected encryption key")
+	version, curKEK := keks.Current()
+	client := newEncryptedGetObjectClient(t, curKEK, version, []byte{})
+	router := Router{keks: keks, log: testLogger()}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "0", rec.Result().Header.Get("Content-Length"))
+}
+
+func TestGetObjectReturnsPlaintextETag(t *testing.T) {
+	keks := newTestKEKs(t, "expected encryption key")
+	version, curKEK := keks.Current()
+	plaintext := []byte("secret payload")
+	client := newEncryptedGetObjectClient(t, curKEK, version, plaintext)
+	// Upstream ETag describes the ciphertext at rest, not the body we deliver.
+	upstreamETag := "\"deadbeefdeadbeefdeadbeefdeadbeef\""
+	client.getObjectOut.ETag = &upstreamETag
+	router := Router{keks: keks, log: testLogger()}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	want := md5.Sum(plaintext)
+	assert.Equal(t, hex.EncodeToString(want[:]), rec.Header().Get("ETag"))
+	assert.NotEqual(t, strings.Trim(upstreamETag, "\""), rec.Header().Get("ETag"))
+}
+
+func TestGetObjectPassThroughKeepsUpstreamETag(t *testing.T) {
+	// No DEK metadata tag: the object was not proxy-encrypted, so the upstream
+	// ETag already describes the bytes we deliver and must be left untouched.
+	body := []byte("plain passthrough")
+	upstreamETag := "\"deadbeefdeadbeefdeadbeefdeadbeef\""
+	client := &recordingS3Client{
+		getObjectOut: &s3.GetObjectOutput{
+			Body:          io.NopCloser(bytes.NewReader(body)),
+			ContentLength: awsInt64(int64(len(body))),
+			ETag:          &upstreamETag,
+		},
+	}
+	router := Router{keks: newTestKEKs(t, "expected encryption key"), log: testLogger()}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, body, rec.Body.Bytes())
+	assert.Equal(t, strings.Trim(upstreamETag, "\""), rec.Header().Get("ETag"))
 }
 
 func TestGetObjectFailsWithWrongRouterKEK(t *testing.T) {

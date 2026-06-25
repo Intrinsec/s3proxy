@@ -38,12 +38,46 @@ import (
 	"github.com/intrinsec/s3proxy/internal/config"
 	"github.com/intrinsec/s3proxy/internal/cryptoutil"
 	"github.com/intrinsec/s3proxy/internal/monitoring"
+	"github.com/intrinsec/s3proxy/internal/multipart"
 	"github.com/intrinsec/s3proxy/internal/s3"
 )
 
 var (
 	bucketAndKeyPattern = regexp.MustCompile("/([^/?]+)/(.+)")
+	// bucketOnlyPattern matches a bucket-level path (no object key), with an optional
+	// trailing slash. Used to detect ListObjects/ListObjectsV2 requests.
+	bucketOnlyPattern = regexp.MustCompile("^/([^/?]+)/?$")
 )
+
+// listSubResourceMarkers are query parameters that turn a bucket-level GET into a
+// sub-resource request (bucket ACL, versioning, multipart listing, …). Those return
+// XML that has no <Contents><Size>, or is out of scope (versions), so they must not be
+// rewritten — only a "clean" ListObjects v1/v2 carries object sizes.
+var listSubResourceMarkers = []string{
+	"acl", "policy", "versioning", "location", "tagging", "lifecycle", "cors",
+	"website", "replication", "encryption", "object-lock", "accelerate", "analytics",
+	"intelligent-tiering", "inventory", "metrics", "logging", "notification",
+	"ownershipControls", "publicAccessBlock", "requestPayment", "uploads", "versions",
+}
+
+// isListObjects reports whether req is a clean ListObjects (v1) or ListObjectsV2 request,
+// i.e. a bucket-level GET with no sub-resource marker query parameters. Both v1 (no
+// list-type) and v2 (list-type=2) match.
+func isListObjects(req *http.Request) bool {
+	if req.Method != http.MethodGet {
+		return false
+	}
+	if !bucketOnlyPattern.MatchString(req.URL.Path) {
+		return false
+	}
+	query := req.URL.Query()
+	for _, marker := range listSubResourceMarkers {
+		if _, ok := query[marker]; ok {
+			return false
+		}
+	}
+	return true
+}
 
 // Router implements the interception logic for the s3proxy.
 type Router struct {
@@ -53,17 +87,21 @@ type Router struct {
 	keks   cryptoutil.KEKProvider
 	client *s3.Client
 	// forwardMultipartReqs controls whether we forward the following requests: CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload.
-	// s3proxy does not implement those yet.
-	// Setting forwardMultipartReqs to true will forward those requests to the S3 API, otherwise we block them (secure defaults).
+	// Setting forwardMultipartReqs to true forwards those requests to the S3 API unchanged (and may leak plaintext upstream).
 	forwardMultipartReqs bool
-	log                  *slog.Logger
-	metrics              *monitoring.Metrics
+	// multipart enables buffer-mode multipart: parts are buffered to local disk and,
+	// on completion, assembled and stored upstream as a single encrypted PutObject.
+	// When nil (and not forwarding), multipart requests are blocked (secure default).
+	// forwardMultipartReqs and multipart are mutually exclusive.
+	multipart *multipart.Manager
+	log       *slog.Logger
+	metrics   *monitoring.Metrics
 }
 
 // New creates a new Router. The S3 client is built once here and reused for every
 // incoming request — the AWS SDK client is safe for concurrent use and maintains
 // its own HTTP connection pool and credentials cache.
-func New(ctx context.Context, region string, forwardMultipartReqs bool, log *slog.Logger, metrics *monitoring.Metrics) (Router, error) {
+func New(ctx context.Context, region string, forwardMultipartReqs bool, multipartManager *multipart.Manager, log *slog.Logger, metrics *monitoring.Metrics) (Router, error) {
 	seed, err := config.GetEncryptKey()
 	if err != nil {
 		return Router{}, fmt.Errorf("getting encryption key: %w", err)
@@ -84,6 +122,7 @@ func New(ctx context.Context, region string, forwardMultipartReqs bool, log *slo
 		keks:                 keks,
 		client:               client,
 		forwardMultipartReqs: forwardMultipartReqs,
+		multipart:            multipartManager,
 		log:                  log,
 		metrics:              metrics,
 	}, nil
@@ -119,7 +158,9 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Validate content length for PUT requests: both the absolute S3 ceiling and the
-	// in-memory PutObject body cap enforced by s3proxy.
+	// in-memory PutObject body cap enforced by s3proxy. Multipart UploadPart bodies
+	// are exempt from the 256 MiB PutObject cap (parts are governed by the multipart
+	// size cap) but still bound by the 5 GiB hard ceiling.
 	if req.Method == http.MethodPut && req.ContentLength > 0 {
 		if err := config.ValidateContentLength(req.ContentLength); err != nil {
 			r.log.Warn("invalid content length", "error", err, "content_length", req.ContentLength)
@@ -127,11 +168,13 @@ func (r Router) Serve(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 			return
 		}
-		if err := config.ValidatePutBodySize(req.ContentLength); err != nil {
-			r.log.Warn("put body too large", "error", err, "content_length", req.ContentLength)
-			r.incError("put_body_too_large")
-			http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
-			return
+		if !isUploadPart(req.Method, req.URL.Query()) {
+			if err := config.ValidatePutBodySize(req.ContentLength); err != nil {
+				r.log.Warn("put body too large", "error", err, "content_length", req.ContentLength)
+				r.incError("put_body_too_large")
+				http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+				return
+			}
 		}
 	}
 
@@ -374,13 +417,17 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 		})
 	}
 
-	// Forward if path doesn't match
+	// Forward if path doesn't match. Bucket-level ListObjects requests land here (they have
+	// no object key); intercept them to report decrypted plaintext sizes.
 	if !matchingPath {
+		if s3Client, ok := client.(*s3.Client); ok && isListObjects(req) {
+			return handleListObjects(s3Client, r.log, r.metrics)
+		}
 		return forwardHandler()
 	}
 
 	// Check multipart operations first (if not forwarding them)
-	if handler := r.getMultipartHandler(req); handler != nil {
+	if handler := r.getMultipartHandler(req, client, key, bucket); handler != nil {
 		return handler
 	}
 
@@ -400,27 +447,40 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 	return forwardHandler()
 }
 
-func (r Router) getMultipartHandler(req *http.Request) http.Handler {
+// getMultipartHandler selects the handler for a multipart request following the
+// precedence forward → buffer → block. In forward mode it returns nil so the
+// regular forwarding path handles the request. In buffer mode (a Manager is wired)
+// it returns the buffering handler. Otherwise it returns the blocking 501 stub
+// (the secure default). ListParts (GET ?uploadId) is not handled here; it stays
+// unsupported in v1.
+func (r Router) getMultipartHandler(req *http.Request, client s3Client, key, bucket string) http.Handler {
 	if r.forwardMultipartReqs {
 		return nil
 	}
 
-	// Check all multipart operations regardless of HTTP method
-	// Let the is* functions determine if they match
+	query := req.URL.Query()
+	buffering := r.multipart != nil
 
-	if isUploadPart(req.Method, req.URL.Query()) {
-		return handleUploadPart(r.log)
-	}
-
-	if isCreateMultipartUpload(req.Method, req.URL.Query()) {
+	switch {
+	case isCreateMultipartUpload(req.Method, query):
+		if buffering {
+			return r.handleCreateMultipartUpload(key, bucket)
+		}
 		return handleCreateMultipartUpload(r.log)
-	}
-
-	if isCompleteMultipartUpload(req.Method, req.URL.Query()) {
+	case isUploadPart(req.Method, query):
+		if buffering {
+			return r.handleUploadPart(key, bucket)
+		}
+		return handleUploadPart(r.log)
+	case isCompleteMultipartUpload(req.Method, query):
+		if buffering {
+			return r.handleCompleteMultipartUpload(client, key, bucket)
+		}
 		return handleCompleteMultipartUpload(r.log)
-	}
-
-	if isAbortMultipartUpload(req.Method, req.URL.Query()) {
+	case isAbortMultipartUpload(req.Method, query):
+		if buffering {
+			return r.handleAbortMultipartUpload()
+		}
 		return handleAbortMultipartUpload(r.log)
 	}
 
@@ -482,4 +542,20 @@ func (r Router) incError(class string) {
 		return
 	}
 	r.metrics.ErrorsTotal.WithLabelValues(class).Inc()
+}
+
+// incMultipartCompleted is a nil-safe helper to bump MultipartCompletedTotal.
+func (r Router) incMultipartCompleted() {
+	if r.metrics == nil {
+		return
+	}
+	r.metrics.MultipartCompletedTotal.Inc()
+}
+
+// incMultipartAborted is a nil-safe helper to bump MultipartAbortedTotal.
+func (r Router) incMultipartAborted() {
+	if r.metrics == nil {
+		return
+	}
+	r.metrics.MultipartAbortedTotal.Inc()
 }

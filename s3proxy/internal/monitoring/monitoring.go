@@ -40,6 +40,13 @@ type Metrics struct {
 	DecryptDuration prometheus.Histogram
 	UpstreamErrors  prometheus.Counter
 	ThrottledTotal  prometheus.Counter
+
+	MultipartUploadsActive    prometheus.Gauge
+	MultipartPartsTotal       prometheus.Counter
+	MultipartBufferBytes      prometheus.Gauge
+	MultipartCompletedTotal   prometheus.Counter
+	MultipartAbortedTotal     prometheus.Counter
+	MultipartAssembleDuration prometheus.Histogram
 }
 
 // New constructs a Metrics bundle backed by a dedicated Registry.
@@ -85,6 +92,31 @@ func New() *Metrics {
 			Name: "s3proxy_throttled_total",
 			Help: "Count of requests rejected by the throttling middleware.",
 		}),
+		MultipartUploadsActive: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "s3proxy_multipart_uploads_active",
+			Help: "Number of in-flight buffered multipart uploads.",
+		}),
+		MultipartPartsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "s3proxy_multipart_parts_total",
+			Help: "Count of multipart parts buffered to disk.",
+		}),
+		MultipartBufferBytes: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "s3proxy_multipart_buffer_bytes",
+			Help: "Bytes currently held on disk across all buffered multipart uploads.",
+		}),
+		MultipartCompletedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "s3proxy_multipart_completed_total",
+			Help: "Count of multipart uploads completed and stored upstream.",
+		}),
+		MultipartAbortedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "s3proxy_multipart_aborted_total",
+			Help: "Count of multipart uploads aborted by the client.",
+		}),
+		MultipartAssembleDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "s3proxy_multipart_assemble_duration_seconds",
+			Help:    "Time spent assembling buffered multipart parts into a single object.",
+			Buckets: prometheus.DefBuckets,
+		}),
 	}
 
 	reg.MustRegister(
@@ -96,9 +128,32 @@ func New() *Metrics {
 		m.DecryptDuration,
 		m.UpstreamErrors,
 		m.ThrottledTotal,
+		m.MultipartUploadsActive,
+		m.MultipartPartsTotal,
+		m.MultipartBufferBytes,
+		m.MultipartCompletedTotal,
+		m.MultipartAbortedTotal,
+		m.MultipartAssembleDuration,
 	)
 
 	return m
+}
+
+// The following methods satisfy the multipart.Metrics interface so the multipart
+// Manager can update its buffer gauges and counters without importing this package.
+
+// AddUploadsActive adjusts the in-flight buffered-upload gauge by delta.
+func (m *Metrics) AddUploadsActive(delta float64) { m.MultipartUploadsActive.Add(delta) }
+
+// IncParts records one buffered multipart part.
+func (m *Metrics) IncParts() { m.MultipartPartsTotal.Inc() }
+
+// AddBufferBytes adjusts the on-disk buffer-bytes gauge by delta.
+func (m *Metrics) AddBufferBytes(delta float64) { m.MultipartBufferBytes.Add(delta) }
+
+// ObserveAssembleSeconds records how long part assembly took.
+func (m *Metrics) ObserveAssembleSeconds(seconds float64) {
+	m.MultipartAssembleDuration.Observe(seconds)
 }
 
 // Registry returns the underlying prometheus Registry. Used by tests.

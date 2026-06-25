@@ -11,10 +11,15 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/v2"
 )
+
+// DefaultMultipartTTL is how long an idle buffered multipart session is retained
+// before the Cleanup sweep evicts it and removes its on-disk parts.
+const DefaultMultipartTTL = 24 * time.Hour
 
 // Config holds every s3proxy runtime setting loaded from the environment.
 type Config struct {
@@ -95,6 +100,43 @@ func (c *Config) MaxPutBodySize() int64 {
 	return v
 }
 
+// MultipartBufferDir returns the local directory used to buffer multipart upload
+// parts (S3PROXY_MULTIPART_BUFFER_DIR). An empty string (the default) leaves
+// buffer-mode multipart disabled.
+func (c *Config) MultipartBufferDir() string {
+	return c.k.String("s3proxy.multipart.buffer.dir")
+}
+
+// MultipartMaxSize returns the maximum assembled object size in bytes for a
+// buffered multipart upload (S3PROXY_MULTIPART_MAX_SIZE). Falls back to
+// MaxObjectSize when unset, non-positive, or larger than MaxObjectSize.
+func (c *Config) MultipartMaxSize() int64 {
+	const key = "s3proxy.multipart.max.size"
+	if !c.k.Exists(key) {
+		return MaxObjectSize
+	}
+	v := c.k.Int64(key)
+	if v <= 0 || v > MaxObjectSize {
+		return MaxObjectSize
+	}
+	return v
+}
+
+// MultipartTTL returns how long an idle buffered multipart session is retained
+// before eviction (S3PROXY_MULTIPART_TTL). Falls back to DefaultMultipartTTL
+// when unset, non-positive, or unparseable.
+func (c *Config) MultipartTTL() time.Duration {
+	const key = "s3proxy.multipart.ttl"
+	if !c.k.Exists(key) {
+		return DefaultMultipartTTL
+	}
+	v := c.k.Duration(key)
+	if v <= 0 {
+		return DefaultMultipartTTL
+	}
+	return v
+}
+
 // DecryptionFallback reports whether GetObject should retry decryption with an
 // all-zero KEK when the configured KEK fails (S3PROXY_DECRYPTION_FALLBACK=1).
 // Intended for one-shot migrations away from objects written without an
@@ -157,3 +199,12 @@ func GetInsecure() bool { return Default().Insecure() }
 
 // GetDecryptionFallback returns the decryption-fallback flag from the default config.
 func GetDecryptionFallback() bool { return Default().DecryptionFallback() }
+
+// GetMultipartBufferDir returns the multipart buffer directory from the default config.
+func GetMultipartBufferDir() string { return Default().MultipartBufferDir() }
+
+// GetMultipartMaxSize returns the multipart max object size from the default config.
+func GetMultipartMaxSize() int64 { return Default().MultipartMaxSize() }
+
+// GetMultipartTTL returns the multipart session TTL from the default config.
+func GetMultipartTTL() time.Duration { return Default().MultipartTTL() }

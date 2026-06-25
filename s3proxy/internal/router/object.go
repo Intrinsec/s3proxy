@@ -9,6 +9,7 @@ package router
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -149,6 +151,14 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
 			return
 		}
+
+		// The upstream ETag is S3's MD5 of the ciphertext at rest, which does not
+		// match the decrypted body we deliver. Override it with the plaintext MD5
+		// so clients that validate or cache by ETag see a consistent value. Single
+		// part only (multipart is blocked/forwarded), so ETag == hex(md5(content)).
+		//nolint:gosec // MD5 is not used as a security primitive here; it is the S3 ETag definition.
+		sum := md5.Sum(plaintext)
+		w.Header().Set("ETag", hex.EncodeToString(sum[:]))
 	}
 
 	select {
@@ -157,6 +167,11 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		releaseLargeBuffer(&plaintext)
 		return
 	default:
+		// The full plaintext is already buffered, so emit an explicit Content-Length
+		// (the upstream value describes the ciphertext, not the decrypted body) so the
+		// server uses identity encoding instead of chunked. Some clients (e.g. s3cmd)
+		// require a Content-Length header on the response.
+		w.Header().Set("Content-Length", strconv.Itoa(len(plaintext)))
 		w.WriteHeader(http.StatusOK)
 		_, writeErr := w.Write(plaintext)
 		releaseLargeBuffer(&plaintext)
@@ -195,33 +210,14 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	log := o.log.With("request_id", requestID)
 	log.Debug("putObject", "key", o.key, "bucket", o.bucket)
 
-	kekVersion, kek := o.keks.Current()
-	encryptStart := time.Now()
-	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(o.data, kek)
-	o.observeEncrypt(time.Since(encryptStart))
-	// The plaintext input is no longer needed; ciphertext is what gets uploaded.
-	// Drop the reference before the long PutObject network call so the runtime
-	// can reclaim those pages instead of holding plaintext + ciphertext at once.
-	releaseLargeBuffer(&o.data)
-	if err != nil {
-		log.Error("PutObject", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	o.metadata[config.GetDekTagName()] = hex.EncodeToString(encryptedDEK)
-	o.metadata[config.GetKEKVersionTagName()] = kekVersion
-
+	// Detach from the request cancellation so a client disconnect does not abort a
+	// partially-uploaded PutObject, but cap the total duration so a hung upstream
+	// cannot produce a zombie request.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s3OperationTimeout)
 	defer cancel()
 
-	output, err := o.client.PutObject(ctx, o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
-	// Release the ciphertext buffer as soon as the upstream call returns, win
-	// or lose: the bytes are either persisted upstream or we are about to fail
-	// the request, and either way we no longer need them.
-	releaseLargeBuffer(&ciphertext)
+	output, err := o.encryptAndUpload(ctx, log)
 	if err != nil {
-		log.Error("PutObject sending request to S3", "error", err)
-		o.incUpstreamError()
 		code := parseErrorCode(err)
 		if code != 0 {
 			http.Error(w, err.Error(), code)
@@ -237,6 +233,41 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write(nil); err != nil {
 		log.Error("PutObject sending response", "error", err)
 	}
+}
+
+// encryptAndUpload encrypts the object body with a fresh per-object DEK, records the
+// wrapped DEK and KEK-version metadata, and stores the ciphertext upstream as a single
+// PutObject. It releases the large plaintext and ciphertext buffers as soon as they are
+// no longer needed. The caller supplies a context (detached from the request and bounded
+// by s3OperationTimeout) so a client disconnect cannot abort an in-flight store.
+func (o object) encryptAndUpload(ctx context.Context, log *slog.Logger) (*s3.PutObjectOutput, error) {
+	kekVersion, kek := o.keks.Current()
+	encryptStart := time.Now()
+	ciphertext, encryptedDEK, err := cryptoutil.Encrypt(o.data, kek)
+	o.observeEncrypt(time.Since(encryptStart))
+	// The plaintext input is no longer needed; ciphertext is what gets uploaded.
+	// Drop the reference before the long PutObject network call so the runtime
+	// can reclaim those pages instead of holding plaintext + ciphertext at once.
+	releaseLargeBuffer(&o.data)
+	if err != nil {
+		log.Error("PutObject", "error", err)
+		return nil, err
+	}
+	o.metadata[config.GetDekTagName()] = hex.EncodeToString(encryptedDEK)
+	o.metadata[config.GetKEKVersionTagName()] = kekVersion
+
+	output, err := o.client.PutObject(ctx, o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
+	// Release the ciphertext buffer as soon as the upstream call returns, win
+	// or lose: the bytes are either persisted upstream or we are about to fail
+	// the request, and either way we no longer need them.
+	releaseLargeBuffer(&ciphertext)
+	if err != nil {
+		log.Error("PutObject sending request to S3", "error", err)
+		o.incUpstreamError()
+		return nil, err
+	}
+
+	return output, nil
 }
 
 func setPutObjectHeaders(w http.ResponseWriter, output *s3.PutObjectOutput) {

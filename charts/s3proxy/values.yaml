@@ -162,11 +162,15 @@ prometheusRule:
     highErrorRate: 0.05          # fraction of 5xx responses → alert when >5%
     highLatencySeconds: 2        # p99 latency seconds → alert when >2s
     crashes: 0                   # container restart count → alert when >0
+    multipartBufferBytes: 10737418240  # multipart buffer disk bytes → alert when >10 GiB
+    multipartStuckUploads: 0     # uploads buffered >2h continuously → alert when >0
   for:
     highErrorRate: 10m           # sustained window before firing
     highLatency: 10m
     serviceDown: 2m
     highCrashRate: 5m
+    multipartBufferHigh: 15m
+    multipartUploadsStuck: 15m
 
 # Grafana dashboard CRD. When enabled the chart ships a `GrafanaDashboard`
 # (`grafana.integreatly.org/v1beta1`) carrying the s3proxy dashboard JSON.

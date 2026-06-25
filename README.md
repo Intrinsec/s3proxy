@@ -31,6 +31,7 @@ The project is a hardened fork of the original [edgelesssys/constellation](https
   - [Logs](#logs)
   - [Health probes](#health-probes)
   - [Troubleshooting](#troubleshooting)
+- [Multipart uploads](#multipart-uploads)
 - [Security](#security)
 - [Architecture](#architecture)
 - [Helm chart reference](#helm-chart-reference)
@@ -89,6 +90,9 @@ All runtime configuration is sourced from environment variables. The Helm chart 
 | `AWS_SECRET_ACCESS_KEY` | yes | — | Idem. |
 | `S3PROXY_THROTTLING_REQUESTSMAX` | no | `0` (off) | Cap on **concurrent in-flight requests** (not RPS). Excess requests are rejected. |
 | `S3PROXY_PUTBODY_MAX` | no | `268435456` (256 MiB) | Per-request PutObject body size ceiling, in bytes. Up to `5368709120` (5 GiB, the S3 hard cap). |
+| `S3PROXY_MULTIPART_BUFFER_DIR` | no | unset (disabled) | Enables **buffer-mode multipart**: parts are buffered to this local directory and assembled into a single encrypted PutObject on completion. Empty leaves multipart blocked. Mutually exclusive with `--allow-multipart`. **Single-instance / session-affinity only** — see [Multipart uploads](#multipart-uploads). |
+| `S3PROXY_MULTIPART_MAX_SIZE` | no | `5368709120` (5 GiB) | Maximum assembled object size for a buffered multipart upload, in bytes. Clamped to 5 GiB (the S3 hard cap). Bounds peak RAM (~2× this) at completion. |
+| `S3PROXY_MULTIPART_TTL` | no | `24h` | How long an idle buffered upload (and its on-disk parts) is retained before the background sweeper evicts it. Also bounds how long orphaned directories survive a restart. |
 | `S3PROXY_DEKTAG_NAME` | no | `isec` | S3 object-metadata key used to store the encrypted DEK. |
 | `S3PROXY_DEKTAG_KEKVER` | no | `<dektag>-kek-ver` | S3 object-metadata key recording which KEK derivation version wrapped the DEK. |
 | `S3PROXY_INSECURE` | no | unset | Set to `1` to use plain HTTP (not HTTPS) when talking to upstream. **Dev / e2e only.** Emits a loud warning at startup. |
@@ -128,6 +132,12 @@ S3Proxy exposes Prometheus metrics on `/metrics` (no authentication; scope via N
 | `s3proxy_decrypt_duration_seconds` | histogram | — | Time spent decrypting GetObject bodies. |
 | `s3proxy_upstream_errors_total` | counter | — | Errors talking to the upstream S3 endpoint. |
 | `s3proxy_throttled_total` | counter | — | Requests rejected by the throttling middleware. |
+| `s3proxy_multipart_uploads_active` | gauge | — | In-flight buffered multipart uploads (buffer mode only). |
+| `s3proxy_multipart_buffer_bytes` | gauge | — | Bytes currently held on disk across all buffered multipart uploads. |
+| `s3proxy_multipart_parts_total` | counter | — | Multipart parts buffered to disk. |
+| `s3proxy_multipart_completed_total` | counter | — | Multipart uploads completed and stored upstream. |
+| `s3proxy_multipart_aborted_total` | counter | — | Multipart uploads aborted by the client. |
+| `s3proxy_multipart_assemble_duration_seconds` | histogram | — | Time spent assembling buffered parts into one object at completion. |
 
 The default Go and process collectors (`go_*`, `process_*`) are also registered.
 
@@ -142,7 +152,7 @@ serviceMonitor:
 
 ### Alerts
 
-The chart ships a `PrometheusRule` (off by default) with four alerts. All thresholds and `for` windows are tunable via `values.yaml`.
+The chart ships a `PrometheusRule` (off by default) with six alerts. All thresholds and `for` windows are tunable via `values.yaml`.
 
 | Alert | Severity | PromQL (default threshold) | Default `for` |
 |---|---|---|---|
@@ -150,8 +160,10 @@ The chart ships a `PrometheusRule` (off by default) with four alerts. All thresh
 | `S3ProxyHighLatency` | warning | `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{service="s3proxy"}[5m]))) > 2` | `10m` |
 | `S3ProxyServiceDown` | critical | `up{job=~".*s3proxy.*"} == 0` | `2m` |
 | `S3ProxyHighCrashRate` | critical | `increase(service_crashes_total{service="s3proxy"}[5m]) > 0` | `5m` |
+| `S3ProxyMultipartBufferHigh` | warning | `s3proxy_multipart_buffer_bytes{service="s3proxy"} > 10737418240` (10 GiB) | `15m` |
+| `S3ProxyMultipartUploadsStuck` | warning | `min_over_time(s3proxy_multipart_uploads_active{service="s3proxy"}[2h]) > 0` | `15m` |
 
-Enable with:
+The two multipart alerts only fire when buffer-mode multipart is enabled (`S3PROXY_MULTIPART_BUFFER_DIR`); otherwise the metrics stay at zero. Enable with:
 
 ```yaml
 prometheusRule:
@@ -162,6 +174,8 @@ prometheusRule:
     highErrorRate: 0.05
     highLatencySeconds: 2
     crashes: 0
+    multipartBufferBytes: 10737418240
+    multipartStuckUploads: 0
 ```
 
 ### Tracing
@@ -203,6 +217,26 @@ args: ["--level=-1"]   # Debug, use only for troubleshooting
 
 ---
 
+## Multipart uploads
+
+Multipart uploads are **blocked by default** (the four multipart endpoints return `501`). Many SDKs auto-switch to multipart above a size threshold, so large uploads fail unless one of two opt-in modes is enabled:
+
+- **Forward mode** (`--allow-multipart`) — parts are forwarded to the upstream **unencrypted**. Leaks plaintext at rest; avoid unless you accept that.
+- **Buffer mode** (`S3PROXY_MULTIPART_BUFFER_DIR`) — parts are buffered to local disk and, on `CompleteMultipartUpload`, concatenated, encrypted (the same AES-256-GCM envelope path as single PutObject) and written upstream as a **single ciphertext object**. Data at rest stays encrypted.
+
+The two modes are mutually exclusive; setting both is a startup error.
+
+### Buffer-mode constraints
+
+- **Single instance / session affinity (hard requirement).** Buffers and the in-flight-upload table are node-local. Every `UploadPart` and the final `CompleteMultipartUpload` for an upload **must reach the same pod that created it**. Run a single replica, or pin client sessions to one pod (e.g. sticky sessions / `sessionAffinity: ClientIP`). There is no distributed/shared state.
+- **Size and memory cap.** The crypto path is two-pass and cannot stream, so the whole object is assembled in RAM at completion (peak ≈ 2× object size). `S3PROXY_MULTIPART_MAX_SIZE` (default and hard cap 5 GiB) bounds this; oversized parts/objects are rejected with `413`. Size the pod's memory accordingly.
+- **Disk usage.** Buffered parts occupy `S3PROXY_MULTIPART_BUFFER_DIR` until the upload completes or its TTL expires. A background sweeper evicts uploads idle longer than `S3PROXY_MULTIPART_TTL` (default 24h) and, on restart, reclaims orphaned directories left by the lost in-memory table. Watch `s3proxy_multipart_buffer_bytes` and the `S3ProxyMultipartBufferHigh` alert; provision the volume for your concurrency × object size.
+- **Durability / ack ordering.** `CompleteMultipartUpload` returns `200` only after the upstream `PutObject` succeeds (using a detached context so a client disconnect cannot abort an in-flight store). An `UploadPart` `200` means "part buffered", not "object stored" — identical to real S3. A crash before upstream success fails `Complete` (the client retries); a crash after success but before the `200` leaves the object durably stored, so a retry is at worst a redundant overwrite.
+- **ETags.** Per-part ETags are synthesized MD5s and the final object ETag is the upstream object's ETag, **not** S3's composite `md5-of-md5s-N` form. Standard SDKs do not validate the composite, so this is transparent in practice.
+- **`ListParts` is not supported** in buffer mode (returns `501`); SDK upload managers that complete from their own tracked part list are unaffected.
+
+---
+
 ## Security
 
 S3Proxy is designed for at-rest data protection in front of an S3-compatible backend that you do not fully trust (multi-tenant object storage, third-party cloud, …). It is **not** a substitute for IAM, network controls, or end-to-end client-side encryption.
@@ -211,7 +245,7 @@ S3Proxy is designed for at-rest data protection in front of an S3-compatible bac
 - **Key wrapping** — per-object DEKs are wrapped with NIST SP-800-38F Key-Wrap-with-Padding (KWP).
 - **KEK derivation** — the seed (`S3PROXY_ENCRYPT_KEY`) is hardened with HKDF-SHA256; the derivation version is recorded on every object (`<dektag>-kek-ver` metadata) so future KEK rotations stay backward-compatible.
 - **Body cap** — PutObject bodies are bounded to `S3PROXY_PUTBODY_MAX` (default 256 MiB, hard cap 5 GiB) to limit memory pressure and DoS surface.
-- **Multipart blocked by default** — the four multipart endpoints (`CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`) are refused unless `--allow-multipart` is passed, because part-by-part data cannot be encrypted in the current design. **Enabling `--allow-multipart` will store unencrypted data on the upstream** — only use it when you understand and accept that.
+- **Multipart blocked by default** — the four multipart endpoints (`CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload`) are refused unless either multipart mode is opted into. **`--allow-multipart` forwards parts to the upstream unencrypted** — only use it when you understand and accept that. For encrypted multipart, enable **buffer mode** (`S3PROXY_MULTIPART_BUFFER_DIR`) instead: parts are buffered locally and stored upstream as a single ciphertext PutObject, so data at rest stays encrypted. See [Multipart uploads](#multipart-uploads) for its constraints. The two modes are mutually exclusive.
 - **Upstream HTTPS by default** — `S3PROXY_INSECURE=1` is a dev/e2e knob and emits a loud warning at startup. Production deployments must leave it unset.
 - **Decryption fallback** — `S3PROXY_DECRYPTION_FALLBACK=1` re-tries decryption with an all-zero KEK to bridge migrations away from unencrypted data. It is a migration helper, not a steady-state option; switch it back off once the migration finishes.
 - **KEK rotation** — currently a single active KEK is supported. The KEK-version metadata is in place for a future multi-KEK rotation flow, but operational KEK rotation is not yet implemented.

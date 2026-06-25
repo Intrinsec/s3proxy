@@ -74,4 +74,38 @@ spec:
               service_crashes_total has increased in the last 5 minutes,
               meaning the HTTP middleware recovered from at least one panic.
               Inspect recent logs for stack traces.
+
+        - alert: S3ProxyMultipartBufferHigh
+          expr: |
+            s3proxy_multipart_buffer_bytes{service="s3proxy"}
+              > {{ .Values.prometheusRule.thresholds.multipartBufferBytes | default 10737418240 }}
+          for: {{ .Values.prometheusRule.for.multipartBufferHigh | default "15m" }}
+          labels:
+            severity: warning
+            service: s3proxy
+          annotations:
+            summary: "s3proxy multipart buffer above threshold"
+            description: |
+              On-disk multipart buffer usage has exceeded the configured
+              threshold. Buffered parts live on node-local disk until their
+              upload completes or its TTL expires; sustained growth risks
+              disk exhaustion. Check for stuck uploads and buffer-dir space.
+
+        - alert: S3ProxyMultipartUploadsStuck
+          expr: |
+            min_over_time(s3proxy_multipart_uploads_active{service="s3proxy"}[2h])
+              > {{ .Values.prometheusRule.thresholds.multipartStuckUploads | default 0 }}
+          for: {{ .Values.prometheusRule.for.multipartUploadsStuck | default "15m" }}
+          labels:
+            severity: warning
+            service: s3proxy
+          annotations:
+            summary: "s3proxy has long-lived buffered multipart uploads"
+            description: |
+              One or more buffered multipart uploads have stayed in-flight for
+              over 2 hours without completing or aborting. Buffers are
+              node-local, so this usually means orphaned sessions (a client
+              that never completed, or parts routed to the wrong instance
+              without session affinity). They are reclaimed at the configured
+              TTL; investigate before disk fills.
 {{- end }}
