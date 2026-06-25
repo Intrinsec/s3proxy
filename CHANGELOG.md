@@ -14,6 +14,13 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+### Fixed
+- **s3cmd `get` compatibility**: intercepted `GetObject` responses now
+  carry a `Content-Length` header reflecting the decrypted body size.
+  Previously the proxy streamed decrypted objects without a length, so
+  Go fell back to chunked transfer encoding and s3cmd 2.4.0 downloaded
+  an empty file. Downloads now complete with the correct size.
+
 ### Chart
 
 - **`chart/1.9.3`** — Dashboard usability + Go runtime panels.

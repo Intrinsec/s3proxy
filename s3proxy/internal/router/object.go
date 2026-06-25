@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -157,6 +158,11 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		releaseLargeBuffer(&plaintext)
 		return
 	default:
+		// The full plaintext is already buffered, so emit an explicit Content-Length
+		// (the upstream value describes the ciphertext, not the decrypted body) so the
+		// server uses identity encoding instead of chunked. Some clients (e.g. s3cmd)
+		// require a Content-Length header on the response.
+		w.Header().Set("Content-Length", strconv.Itoa(len(plaintext)))
 		w.WriteHeader(http.StatusOK)
 		_, writeErr := w.Write(plaintext)
 		releaseLargeBuffer(&plaintext)

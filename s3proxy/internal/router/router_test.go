@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -196,6 +197,35 @@ func TestGetObjectUsesRouterKEK(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "secret payload", rec.Body.String())
+}
+
+func TestGetObjectSetsPlaintextContentLength(t *testing.T) {
+	keks := newTestKEKs(t, "expected encryption key")
+	version, curKEK := keks.Current()
+	client := newEncryptedGetObjectClient(t, curKEK, version, []byte("secret payload"))
+	router := Router{keks: keks, log: testLogger()}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	// The header must reflect the plaintext length, not the +28-byte ciphertext.
+	assert.Equal(t, strconv.Itoa(len("secret payload")), rec.Result().Header.Get("Content-Length"))
+}
+
+func TestGetObjectSetsZeroContentLengthForEmptyObject(t *testing.T) {
+	keks := newTestKEKs(t, "expected encryption key")
+	version, curKEK := keks.Current()
+	client := newEncryptedGetObjectClient(t, curKEK, version, []byte{})
+	router := Router{keks: keks, log: testLogger()}
+	req := httptest.NewRequest(http.MethodGet, "/bucket/key", nil)
+	rec := httptest.NewRecorder()
+
+	router.getHandler(req, client, true, "key", "bucket").ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "0", rec.Result().Header.Get("Content-Length"))
 }
 
 func TestGetObjectFailsWithWrongRouterKEK(t *testing.T) {
