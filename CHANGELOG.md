@@ -14,6 +14,18 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+### Fixed
+- **`GetObject` returns the plaintext ETag.** Intercepted GETs decrypt the
+  body but previously returned the upstream ETag, which S3 computes over the
+  ciphertext at rest. Clients (or SDKs) that validate the body against the
+  ETag, or cache by it, saw a mismatch. The proxy now overrides the response
+  ETag with `md5(plaintext)` — the ETag S3 would have produced for the
+  unencrypted object — computed on the fly from the buffer already held in
+  memory, so no stored metadata or migration is needed. Pass-through objects
+  (no DEK tag) keep the upstream ETag, which already describes the delivered
+  bytes. PUT-response and HEAD ETags still reflect the ciphertext and remain
+  a known consistency gap.
+
 ### Chart
 
 - **`chart/1.9.3`** — Dashboard usability + Go runtime panels.
