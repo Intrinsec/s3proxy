@@ -167,6 +167,22 @@ func TestProxyRoundtripAgainstMinio(t *testing.T) {
 	require.NoError(t, got.Body.Close())
 	assert.Equal(t, plaintext, gotBody)
 
+	// Listing through the proxy must report the decrypted plaintext size, not the larger
+	// ciphertext size that actually sits at rest. Cover both ListObjectsV2 and ListObjects v1.
+	listV2, err := proxyClient.ListObjectsV2(ctx, &awss3.ListObjectsV2Input{
+		Bucket: aws.String(bucket),
+	})
+	require.NoError(t, err)
+	require.Len(t, listV2.Contents, 1)
+	assert.EqualValues(t, len(plaintext), *listV2.Contents[0].Size, "ListObjectsV2 must report plaintext size")
+
+	listV1, err := proxyClient.ListObjects(ctx, &awss3.ListObjectsInput{
+		Bucket: aws.String(bucket),
+	})
+	require.NoError(t, err)
+	require.Len(t, listV1.Contents, 1)
+	assert.EqualValues(t, len(plaintext), *listV1.Contents[0].Size, "ListObjects v1 must report plaintext size")
+
 	// Housekeeping endpoints stay reachable while traffic is flowing.
 	healthResp, err := http.Get(proxyURL.String() + "/healthz")
 	require.NoError(t, err)

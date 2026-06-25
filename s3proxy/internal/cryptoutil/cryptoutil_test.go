@@ -46,3 +46,25 @@ func TestEncryptDecrypt(t *testing.T) {
 		})
 	}
 }
+
+// TestEncryptionOverhead asserts that Encrypt adds exactly EncryptionOverhead bytes to the
+// plaintext, regardless of plaintext size. This invariant is what lets the router subtract a
+// constant to report decrypted sizes in LIST responses; it fails loudly if the envelope changes.
+func TestEncryptionOverhead(t *testing.T) {
+	for _, size := range []int{0, 1, 28, 29, 1024, 1610862} {
+		t.Run(fmt.Sprintf("size_%d", size), func(t *testing.T) {
+			kek := [32]byte{}
+			_, err := rand.Read(kek[:])
+			require.NoError(t, err)
+
+			plaintext := make([]byte, size)
+			_, err = rand.Read(plaintext)
+			require.NoError(t, err)
+
+			ciphertext, _, err := Encrypt(plaintext, kek)
+			require.NoError(t, err)
+
+			assert.Equal(t, size+EncryptionOverhead, len(ciphertext))
+		})
+	}
+}
