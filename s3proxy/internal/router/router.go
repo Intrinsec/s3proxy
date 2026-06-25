@@ -44,7 +44,40 @@ import (
 
 var (
 	bucketAndKeyPattern = regexp.MustCompile("/([^/?]+)/(.+)")
+	// bucketOnlyPattern matches a bucket-level path (no object key), with an optional
+	// trailing slash. Used to detect ListObjects/ListObjectsV2 requests.
+	bucketOnlyPattern = regexp.MustCompile("^/([^/?]+)/?$")
 )
+
+// listSubResourceMarkers are query parameters that turn a bucket-level GET into a
+// sub-resource request (bucket ACL, versioning, multipart listing, …). Those return
+// XML that has no <Contents><Size>, or is out of scope (versions), so they must not be
+// rewritten — only a "clean" ListObjects v1/v2 carries object sizes.
+var listSubResourceMarkers = []string{
+	"acl", "policy", "versioning", "location", "tagging", "lifecycle", "cors",
+	"website", "replication", "encryption", "object-lock", "accelerate", "analytics",
+	"intelligent-tiering", "inventory", "metrics", "logging", "notification",
+	"ownershipControls", "publicAccessBlock", "requestPayment", "uploads", "versions",
+}
+
+// isListObjects reports whether req is a clean ListObjects (v1) or ListObjectsV2 request,
+// i.e. a bucket-level GET with no sub-resource marker query parameters. Both v1 (no
+// list-type) and v2 (list-type=2) match.
+func isListObjects(req *http.Request) bool {
+	if req.Method != http.MethodGet {
+		return false
+	}
+	if !bucketOnlyPattern.MatchString(req.URL.Path) {
+		return false
+	}
+	query := req.URL.Query()
+	for _, marker := range listSubResourceMarkers {
+		if _, ok := query[marker]; ok {
+			return false
+		}
+	}
+	return true
+}
 
 // Router implements the interception logic for the s3proxy.
 type Router struct {
@@ -384,8 +417,12 @@ func (r Router) getHandler(req *http.Request, client s3Client, matchingPath bool
 		})
 	}
 
-	// Forward if path doesn't match
+	// Forward if path doesn't match. Bucket-level ListObjects requests land here (they have
+	// no object key); intercept them to report decrypted plaintext sizes.
 	if !matchingPath {
+		if s3Client, ok := client.(*s3.Client); ok && isListObjects(req) {
+			return handleListObjects(s3Client, r.log, r.metrics)
+		}
 		return forwardHandler()
 	}
 

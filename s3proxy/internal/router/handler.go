@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
@@ -138,42 +139,47 @@ func handlePutObject(client s3Client, key string, bucket string, keks cryptoutil
 	}
 }
 
+// forwardUpstream repackages, signs and sends req to the upstream S3 API, returning the
+// upstream response. The caller owns resp.Body and must close it. metrics may be nil.
+func forwardUpstream(client *s3.Client, req *http.Request, metrics *monitoring.Metrics) (*http.Response, error) {
+	newReq, err := repackage(req)
+	if err != nil {
+		return nil, fmt.Errorf("repackaging request: %w", err)
+	}
+
+	cfg := client.GetConfig()
+
+	creds, err := cfg.Credentials.Retrieve(context.TODO())
+	if err != nil {
+		return nil, fmt.Errorf("retrieving aws creds: %w", err)
+	}
+
+	signer := v4.NewSigner()
+
+	err = signer.SignHTTP(context.TODO(), creds, newReq, newReq.Header.Get("X-Amz-Content-Sha256"), "s3", cfg.Region, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("signing request: %w", err)
+	}
+
+	resp, err := forwardHTTPClient.Do(newReq)
+	if err != nil {
+		if metrics != nil {
+			metrics.UpstreamErrors.Inc()
+		}
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+
+	return resp, nil
+}
+
 func handleForwards(client *s3.Client, log *slog.Logger, metrics *monitoring.Metrics) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		log.Debug("forwarding", "path", req.URL.Path, "method", req.Method, "host", req.Host)
 
-		newReq, err := repackage(req)
+		resp, err := forwardUpstream(client, req, metrics)
 		if err != nil {
-			log.Error("failed to repackage request", "error", err)
+			log.Error("forwarding request", "error", err)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		cfg := client.GetConfig()
-
-		creds, err := cfg.Credentials.Retrieve(context.TODO())
-		if err != nil {
-			log.Error("unable to retrieve aws creds", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		signer := v4.NewSigner()
-
-		err = signer.SignHTTP(context.TODO(), creds, newReq, newReq.Header.Get("X-Amz-Content-Sha256"), "s3", cfg.Region, time.Now())
-		if err != nil {
-			log.Error("failed to sign request", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-
-		resp, err := forwardHTTPClient.Do(newReq)
-		if err != nil {
-			log.Error("do request", "error", err)
-			if metrics != nil {
-				metrics.UpstreamErrors.Inc()
-			}
-			http.Error(w, "do request: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		defer func() {
@@ -191,6 +197,53 @@ func handleForwards(client *s3.Client, log *slog.Logger, metrics *monitoring.Met
 		if _, err := io.Copy(w, resp.Body); err != nil {
 			log.Error("failed to stream response", "error", err)
 			// Headers already written; cannot send error response.
+		}
+	}
+}
+
+// handleListObjects forwards a ListObjects/ListObjectsV2 request upstream, then rewrites the
+// reported object sizes in the XML response to the decrypted plaintext size (ciphertext size
+// minus the fixed encryption overhead). List pages are bounded (≤1000 keys), so buffering the
+// body is safe. Only successful (2xx) responses are rewritten; everything else passes through.
+func handleListObjects(client *s3.Client, log *slog.Logger, metrics *monitoring.Metrics) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		log.Debug("intercepting ListObjects", "path", req.URL.Path, "method", req.Method, "host", req.Host)
+
+		resp, err := forwardUpstream(client, req, metrics)
+		if err != nil {
+			log.Error("forwarding ListObjects request", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		defer func() {
+			if cerr := resp.Body.Close(); cerr != nil {
+				log.Error("failed to close upstream response body", "error", cerr)
+			}
+		}()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			log.Error("reading ListObjects response body", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		out := body
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			out = rewriteListSizes(body)
+		}
+
+		// Preserve multi-value headers (Set-Cookie, Vary, etc.).
+		for key, values := range resp.Header {
+			w.Header()[key] = values
+		}
+		// The rewritten body is shorter than the upstream ciphertext sizes, so the upstream
+		// Content-Length no longer applies — set it to the actual body length.
+		w.Header().Set("Content-Length", strconv.Itoa(len(out)))
+		w.WriteHeader(resp.StatusCode)
+
+		if _, err := w.Write(out); err != nil {
+			log.Error("failed to write ListObjects response", "error", err)
 		}
 	}
 }

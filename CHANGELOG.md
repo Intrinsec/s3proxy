@@ -38,6 +38,15 @@ Two version streams move independently:
     (buffers are node-local), assembled object must fit in RAM (~2× peak),
     `ListParts` unsupported. `Complete` acks only after the upstream store
     succeeds, inheriting the single-shot path's durability ordering.
+- `ListObjects`/`ListObjectsV2` responses now report the **decrypted plaintext
+  size** of each object instead of the larger at-rest ciphertext size. The proxy
+  intercepts bucket-level list requests, subtracts the fixed 28-byte encryption
+  overhead (12-byte nonce + 16-byte GCM tag) from every `<Size>`, and clamps at 0.
+  Bucket sub-resource GETs (acl, versioning, multipart listings, `?versions`, …)
+  are still forwarded unchanged.
+  - *Known limitation:* objects **not** written through the proxy (legacy
+    plaintext, server-side copies, multipart) are reported 28 bytes short (or 0
+    after clamp), since a list response carries no per-object encryption metadata.
 
 ### Fixed
 - **s3cmd `get` compatibility**: intercepted `GetObject` responses now
