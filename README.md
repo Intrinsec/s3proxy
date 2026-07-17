@@ -89,6 +89,7 @@ All runtime configuration is sourced from environment variables. The Helm chart 
 | `AWS_SECRET_ACCESS_KEY` | yes | — | Idem. |
 | `S3PROXY_THROTTLING_REQUESTSMAX` | no | `0` (off) | Cap on **concurrent in-flight requests** (not RPS). Excess requests are rejected. |
 | `S3PROXY_PUTBODY_MAX` | no | `268435456` (256 MiB) | Per-request PutObject body size ceiling, in bytes. Up to `5368709120` (5 GiB, the S3 hard cap). |
+| `S3PROXY_S3_OPERATION_TIMEOUT` | no | `120` (2 min) | Upper bound, in seconds, on a single upstream GetObject/PutObject call. Raise this for large objects on slow links. Up to `1800` (30 min). |
 | `S3PROXY_DEKTAG_NAME` | no | `isec` | S3 object-metadata key used to store the encrypted DEK. |
 | `S3PROXY_DEKTAG_KEKVER` | no | `<dektag>-kek-ver` | S3 object-metadata key recording which KEK derivation version wrapped the DEK. |
 | `S3PROXY_INSECURE` | no | unset | Set to `1` to use plain HTTP (not HTTPS) when talking to upstream. **Dev / e2e only.** Emits a loud warning at startup. |

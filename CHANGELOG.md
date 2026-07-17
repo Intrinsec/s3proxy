@@ -14,6 +14,12 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+### Added
+
+- Configurable timeout for upstream `GetObject` and `PutObject` operations via
+  `S3PROXY_S3_OPERATION_TIMEOUT`; defaults to 120 seconds and accepts values up
+  to 30 minutes.
+
 ### Chart
 
 - **`chart/1.9.3`** — Dashboard usability + Go runtime panels.
