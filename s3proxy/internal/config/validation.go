@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"time"
 )
 
 // Validate asserts that the required s3proxy configuration is present and well-formed.
@@ -92,6 +93,15 @@ const MaxObjectSize = 5 * 1024 * 1024 * 1024
 // Operators can raise this via S3PROXY_PUTBODY_MAX (bytes) up to MaxObjectSize once a
 // streaming encryption path is introduced.
 const DefaultMaxPutBodySize = 256 * 1024 * 1024
+
+// DefaultS3OperationTimeout is the default upper bound on a single S3
+// GetObject/PutObject call. Large objects on slow links can need more time;
+// operators can raise this via S3PROXY_S3_OPERATION_TIMEOUT (seconds).
+const DefaultS3OperationTimeout = 2 * time.Minute
+
+// MaxS3OperationTimeout bounds how high S3PROXY_S3_OPERATION_TIMEOUT can be set,
+// so a misconfiguration cannot leave requests hanging indefinitely.
+const MaxS3OperationTimeout = 30 * time.Minute
 
 // ValidateContentLength validates the content length of a request against the S3 hard cap.
 func ValidateContentLength(contentLength int64) error {

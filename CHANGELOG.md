@@ -41,6 +41,11 @@ Two version streams move independently:
   - *Known limitation:* objects **not** written through the proxy (legacy
     plaintext, server-side copies, multipart) are reported 28 bytes short (or 0
     after clamp), since a list response carries no per-object encryption metadata.
+### Added
+
+- Configurable timeout for upstream `GetObject` and `PutObject` operations via
+  `S3PROXY_S3_OPERATION_TIMEOUT`; defaults to 120 seconds and accepts values up
+  to 30 minutes.
 
 ### Chart
 

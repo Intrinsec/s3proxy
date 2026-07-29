@@ -47,12 +47,6 @@ func releaseLargeBuffer(buf *[]byte) {
 	}
 }
 
-// s3OperationTimeout bounds the total duration of an individual S3 GetObject/PutObject call.
-// We detach from the request context (context.WithoutCancel) so a client disconnect does not
-// abort a partially-uploaded PutObject, but we still cap overall work to protect against
-// hung upstreams producing zombie requests.
-const s3OperationTimeout = 2 * time.Minute
-
 // object bundles data to implement http.Handler methods that use data from incoming requests.
 type object struct {
 	keks                      cryptoutil.KEKProvider
@@ -86,7 +80,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	// Detach from the request cancellation to avoid aborting an S3 operation when
 	// the client disconnects mid-flight, but cap the total duration so a hung
 	// upstream cannot produce a zombie request.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s3OperationTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), config.GetS3OperationTimeout())
 	defer cancel()
 
 	output, err := o.client.GetObject(ctx, o.bucket, o.key, o.versionID, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
@@ -226,7 +220,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	o.metadata[config.GetDekTagName()] = hex.EncodeToString(encryptedDEK)
 	o.metadata[config.GetKEKVersionTagName()] = kekVersion
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s3OperationTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), config.GetS3OperationTimeout())
 	defer cancel()
 
 	output, err := o.client.PutObject(ctx, o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)

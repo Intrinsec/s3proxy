@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/v2"
@@ -95,6 +96,21 @@ func (c *Config) MaxPutBodySize() int64 {
 	return v
 }
 
+// S3OperationTimeout returns the configured upper bound on a single S3
+// GetObject/PutObject call. Falls back to DefaultS3OperationTimeout when
+// S3PROXY_S3_OPERATION_TIMEOUT (seconds) is unset, zero, or out of range.
+func (c *Config) S3OperationTimeout() time.Duration {
+	const key = "s3proxy.s3.operation.timeout"
+	if !c.k.Exists(key) {
+		return DefaultS3OperationTimeout
+	}
+	v := time.Duration(c.k.Int64(key)) * time.Second
+	if v <= 0 || v > MaxS3OperationTimeout {
+		return DefaultS3OperationTimeout
+	}
+	return v
+}
+
 // DecryptionFallback reports whether GetObject should retry decryption with an
 // all-zero KEK when the configured KEK fails (S3PROXY_DECRYPTION_FALLBACK=1).
 // Intended for one-shot migrations away from objects written without an
@@ -154,6 +170,9 @@ func GetMaxPutBodySize() int64 { return Default().MaxPutBodySize() }
 
 // GetInsecure returns whether upstream S3 traffic should use http:// from the default config.
 func GetInsecure() bool { return Default().Insecure() }
+
+// GetS3OperationTimeout returns the S3 operation timeout from the default config.
+func GetS3OperationTimeout() time.Duration { return Default().S3OperationTimeout() }
 
 // GetDecryptionFallback returns the decryption-fallback flag from the default config.
 func GetDecryptionFallback() bool { return Default().DecryptionFallback() }

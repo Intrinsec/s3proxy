@@ -9,7 +9,9 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/knadh/koanf/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -103,4 +105,31 @@ func TestValidatePutBodySize(t *testing.T) {
 	err := ValidatePutBodySize(DefaultMaxPutBodySize + 1)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds PutObject body cap")
+}
+
+func TestS3OperationTimeout(t *testing.T) {
+	tests := map[string]struct {
+		value string
+		want  time.Duration
+	}{
+		"valid":        {value: "300", want: 5 * time.Minute},
+		"at maximum":   {value: "1800", want: MaxS3OperationTimeout},
+		"zero":         {value: "0", want: DefaultS3OperationTimeout},
+		"negative":     {value: "-1", want: DefaultS3OperationTimeout},
+		"over maximum": {value: "1801", want: DefaultS3OperationTimeout},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("S3PROXY_S3_OPERATION_TIMEOUT", tc.value)
+			cfg, err := Load()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, cfg.S3OperationTimeout())
+		})
+	}
+
+	t.Run("unset", func(t *testing.T) {
+		cfg := &Config{k: koanf.New(".")}
+		assert.Equal(t, DefaultS3OperationTimeout, cfg.S3OperationTimeout())
+	})
 }
