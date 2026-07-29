@@ -9,6 +9,7 @@ package router
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -150,6 +151,14 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
 			return
 		}
+
+		// The upstream ETag is S3's MD5 of the ciphertext at rest, which does not
+		// match the decrypted body we deliver. Override it with the plaintext MD5
+		// so clients that validate or cache by ETag see a consistent value. Single
+		// part only (multipart is blocked/forwarded), so ETag == hex(md5(content)).
+		//nolint:gosec // MD5 is not used as a security primitive here; it is the S3 ETag definition.
+		sum := md5.Sum(plaintext)
+		w.Header().Set("ETag", hex.EncodeToString(sum[:]))
 	}
 
 	select {
