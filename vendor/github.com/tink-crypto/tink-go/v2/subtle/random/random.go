@@ -16,22 +16,21 @@
 package random
 
 import (
-	"crypto/rand"
 	"encoding/binary"
+
+	"github.com/tink-crypto/tink-go/v2/internal/random"
 )
 
 // GetRandomBytes randomly generates n bytes.
 func GetRandomBytes(n uint32) []byte {
 	buf := make([]byte, n)
-	_, err := rand.Read(buf)
-	if err != nil {
-		panic(err) // out of randomness, should never happen
-	}
+	random.MustRand(buf)
 	return buf
 }
 
 // GetRandomUint32 randomly generates an unsigned 32-bit integer.
 func GetRandomUint32() uint32 {
-	b := GetRandomBytes(4)
-	return binary.BigEndian.Uint32(b)
+	var b [4]byte
+	random.MustRand(b[:])
+	return binary.BigEndian.Uint32(b[:])
 }
