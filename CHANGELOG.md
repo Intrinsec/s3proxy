@@ -25,6 +25,7 @@ Two version streams move independently:
   certificate is only picked up when the pods restart. Without the annotation
   the proxy keeps serving the expired certificate after cert-manager rotates
   it, and every TLS client fails with `x509: certificate has expired`.
+- **`chart/1.9.3`** — Dashboard usability + Go runtime panels.
   - `Job` picker now defaults to **All** (`allValue: ".*s3proxy.*"`) and
     restricts its dropdown to jobs whose name contains `s3proxy` via the
     template `regex: /s3proxy/`. Multi-release clusters land on a
