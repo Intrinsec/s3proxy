@@ -16,7 +16,15 @@ Two version streams move independently:
 
 ### Chart
 
-- **`chart/1.9.3`** — Dashboard usability + Go runtime panels.
+- **`chart/1.10.0`** — New `deploymentAnnotations` value, rendered onto the
+  `Deployment` object's own `metadata.annotations`. Until now the chart only
+  exposed `podAnnotations`, which lands on the pod template — so controllers
+  that watch the workload metadata had no way in. The motivating case is
+  Stakater Reloader (`reloader.stakater.com/auto: "true"`): the TLS secret is
+  mounted with `subPath`, which kubelet never refreshes in place, so a renewed
+  certificate is only picked up when the pods restart. Without the annotation
+  the proxy keeps serving the expired certificate after cert-manager rotates
+  it, and every TLS client fails with `x509: certificate has expired`.
   - `Job` picker now defaults to **All** (`allValue: ".*s3proxy.*"`) and
     restricts its dropdown to jobs whose name contains `s3proxy` via the
     template `regex: /s3proxy/`. Multi-release clusters land on a

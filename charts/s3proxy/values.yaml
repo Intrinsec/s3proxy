@@ -80,6 +80,15 @@ valsSecret: {}
 #   secretKey: ref+vault://s3proxy/secrets/secret-key
 #   encryptKey: ref+vault://s3proxy/secrets/encrypt-key
 
+# Annotations set on the Deployment object itself (not the pod template).
+# Required by controllers that watch the workload metadata, e.g. Stakater
+# Reloader, which restarts the pods when the TLS secret is renewed:
+#   deploymentAnnotations:
+#     reloader.stakater.com/auto: "true"
+# The cert secret is mounted with subPath, so kubelet never refreshes it
+# in-place — a pod restart is the only way to pick up a renewed certificate.
+deploymentAnnotations: {}
+
 podAnnotations: {}
 podLabels: {}
 
