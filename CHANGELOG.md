@@ -14,6 +14,11 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed third-party dependencies, the Go toolchain and the build image
+  pin. Patched 5 known vulnerabilities — `govulncheck` now reports none.
+
 ## [1.9.0] — 2026-07-29
 
 Ships the S3 client-compatibility fixes (`Content-Length`, plaintext `ETag`),
