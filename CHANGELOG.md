@@ -14,6 +14,12 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-07-29
+
+Ships the S3 client-compatibility fixes (`Content-Length`, plaintext `ETag`),
+plaintext sizes in `ListObjects`, and a configurable upstream operation timeout.
+Chart `1.10.0` accompanies this release.
+
 ### Fixed
 - **s3cmd `get` compatibility**: intercepted `GetObject` responses now
   carry a `Content-Length` header reflecting the decrypted body size.
@@ -30,6 +36,7 @@ Two version streams move independently:
   (no DEK tag) keep the upstream ETag, which already describes the delivered
   bytes. PUT-response and HEAD ETags still reflect the ciphertext and remain
   a known consistency gap.
+
 ### Added
 
 - `ListObjects`/`ListObjectsV2` responses now report the **decrypted plaintext
@@ -41,8 +48,6 @@ Two version streams move independently:
   - *Known limitation:* objects **not** written through the proxy (legacy
     plaintext, server-side copies, multipart) are reported 28 bytes short (or 0
     after clamp), since a list response carries no per-object encryption metadata.
-### Added
-
 - Configurable timeout for upstream `GetObject` and `PutObject` operations via
   `S3PROXY_S3_OPERATION_TIMEOUT`; defaults to 120 seconds and accepts values up
   to 30 minutes.
