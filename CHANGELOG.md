@@ -14,10 +14,20 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-07-29
+
+Security maintenance. No functional change over 1.9.0 — same behaviour, patched
+dependencies. Chart `1.10.1` accompanies this release and points at the new image.
+
 ### Changed
 
 - Refreshed third-party dependencies, the Go toolchain and the build image
   pin. Patched 5 known vulnerabilities — `govulncheck` now reports none.
+
+### Chart
+
+- **`chart/1.10.1`** — `appVersion` follows the app to `1.9.1`, so the default
+  image tag pulls the patched build. No template or values change.
 
 ## [1.9.0] — 2026-07-29
 
