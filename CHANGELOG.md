@@ -14,9 +14,55 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-07-29
+
+Ships the S3 client-compatibility fixes (`Content-Length`, plaintext `ETag`),
+plaintext sizes in `ListObjects`, and a configurable upstream operation timeout.
+Chart `1.10.0` accompanies this release.
+
+### Fixed
+- **s3cmd `get` compatibility**: intercepted `GetObject` responses now
+  carry a `Content-Length` header reflecting the decrypted body size.
+  Previously the proxy streamed decrypted objects without a length, so
+  Go fell back to chunked transfer encoding and s3cmd 2.4.0 downloaded
+  an empty file. Downloads now complete with the correct size.
+- **`GetObject` returns the plaintext ETag.** Intercepted GETs decrypt the
+  body but previously returned the upstream ETag, which S3 computes over the
+  ciphertext at rest. Clients (or SDKs) that validate the body against the
+  ETag, or cache by it, saw a mismatch. The proxy now overrides the response
+  ETag with `md5(plaintext)` — the ETag S3 would have produced for the
+  unencrypted object — computed on the fly from the buffer already held in
+  memory, so no stored metadata or migration is needed. Pass-through objects
+  (no DEK tag) keep the upstream ETag, which already describes the delivered
+  bytes. PUT-response and HEAD ETags still reflect the ciphertext and remain
+  a known consistency gap.
+
+### Added
+
+- `ListObjects`/`ListObjectsV2` responses now report the **decrypted plaintext
+  size** of each object instead of the larger at-rest ciphertext size. The proxy
+  intercepts bucket-level list requests, subtracts the fixed 28-byte encryption
+  overhead (12-byte nonce + 16-byte GCM tag) from every `<Size>`, and clamps at 0.
+  Bucket sub-resource GETs (acl, versioning, multipart listings, `?versions`, …)
+  are still forwarded unchanged.
+  - *Known limitation:* objects **not** written through the proxy (legacy
+    plaintext, server-side copies, multipart) are reported 28 bytes short (or 0
+    after clamp), since a list response carries no per-object encryption metadata.
+- Configurable timeout for upstream `GetObject` and `PutObject` operations via
+  `S3PROXY_S3_OPERATION_TIMEOUT`; defaults to 120 seconds and accepts values up
+  to 30 minutes.
+
 ### Chart
 
-- **`chart/1.9.3`** — Dashboard usability + Go runtime panels.
+- **`chart/1.10.0`** — New `deploymentAnnotations` value, rendered onto the
+  `Deployment` object's own `metadata.annotations`. Until now the chart only
+  exposed `podAnnotations`, which lands on the pod template — so controllers
+  that watch the workload metadata had no way in. The motivating case is
+  Stakater Reloader (`reloader.stakater.com/auto: "true"`): the TLS secret is
+  mounted with `subPath`, which kubelet never refreshes in place, so a renewed
+  certificate is only picked up when the pods restart. Without the annotation
+  the proxy keeps serving the expired certificate after cert-manager rotates
+  it, and every TLS client fails with `x509: certificate has expired`.
   - `Job` picker now defaults to **All** (`allValue: ".*s3proxy.*"`) and
     restricts its dropdown to jobs whose name contains `s3proxy` via the
     template `regex: /s3proxy/`. Multi-release clusters land on a

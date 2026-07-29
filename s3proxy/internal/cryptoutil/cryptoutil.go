@@ -18,6 +18,11 @@ import (
 	"github.com/tink-crypto/tink-go/v2/subtle/random"
 )
 
+// EncryptionOverhead is the fixed number of bytes Encrypt adds to the plaintext:
+// a 12-byte AES-GCM-SIV nonce prefix plus a 16-byte authentication tag suffix.
+// Ciphertext length is always plaintext length + EncryptionOverhead.
+const EncryptionOverhead = 28
+
 // Encrypt generates a random key to encrypt a plaintext using AES-256-GCM.
 // The generated key is encrypted using the supplied key encryption key (KEK).
 // The ciphertext and encrypted data encryption key (DEK) are returned.

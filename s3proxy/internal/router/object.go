@@ -9,6 +9,7 @@ package router
 
 import (
 	"context"
+	"crypto/md5"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -44,12 +46,6 @@ func releaseLargeBuffer(buf *[]byte) {
 		debug.FreeOSMemory()
 	}
 }
-
-// s3OperationTimeout bounds the total duration of an individual S3 GetObject/PutObject call.
-// We detach from the request context (context.WithoutCancel) so a client disconnect does not
-// abort a partially-uploaded PutObject, but we still cap overall work to protect against
-// hung upstreams producing zombie requests.
-const s3OperationTimeout = 2 * time.Minute
 
 // object bundles data to implement http.Handler methods that use data from incoming requests.
 type object struct {
@@ -84,7 +80,7 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 	// Detach from the request cancellation to avoid aborting an S3 operation when
 	// the client disconnects mid-flight, but cap the total duration so a hung
 	// upstream cannot produce a zombie request.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s3OperationTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), config.GetS3OperationTimeout())
 	defer cancel()
 
 	output, err := o.client.GetObject(ctx, o.bucket, o.key, o.versionID, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5)
@@ -149,6 +145,14 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to decrypt object", http.StatusInternalServerError)
 			return
 		}
+
+		// The upstream ETag is S3's MD5 of the ciphertext at rest, which does not
+		// match the decrypted body we deliver. Override it with the plaintext MD5
+		// so clients that validate or cache by ETag see a consistent value. Single
+		// part only (multipart is blocked/forwarded), so ETag == hex(md5(content)).
+		//nolint:gosec // MD5 is not used as a security primitive here; it is the S3 ETag definition.
+		sum := md5.Sum(plaintext)
+		w.Header().Set("ETag", hex.EncodeToString(sum[:]))
 	}
 
 	select {
@@ -157,6 +161,11 @@ func (o object) get(w http.ResponseWriter, r *http.Request) {
 		releaseLargeBuffer(&plaintext)
 		return
 	default:
+		// The full plaintext is already buffered, so emit an explicit Content-Length
+		// (the upstream value describes the ciphertext, not the decrypted body) so the
+		// server uses identity encoding instead of chunked. Some clients (e.g. s3cmd)
+		// require a Content-Length header on the response.
+		w.Header().Set("Content-Length", strconv.Itoa(len(plaintext)))
 		w.WriteHeader(http.StatusOK)
 		_, writeErr := w.Write(plaintext)
 		releaseLargeBuffer(&plaintext)
@@ -211,7 +220,7 @@ func (o object) put(w http.ResponseWriter, r *http.Request) {
 	o.metadata[config.GetDekTagName()] = hex.EncodeToString(encryptedDEK)
 	o.metadata[config.GetKEKVersionTagName()] = kekVersion
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), s3OperationTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), config.GetS3OperationTimeout())
 	defer cancel()
 
 	output, err := o.client.PutObject(ctx, o.bucket, o.key, o.tags, o.contentType, o.objectLockLegalHoldStatus, o.objectLockMode, o.sseCustomerAlgorithm, o.sseCustomerKey, o.sseCustomerKeyMD5, o.objectLockRetainUntilDate, o.metadata, ciphertext)
