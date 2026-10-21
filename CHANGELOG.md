@@ -14,6 +14,12 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+### Changed
+
+- Built with Go 1.27 (was 1.26), with refreshed third-party dependencies and
+  build image pin. Patched 21 known vulnerabilities — `govulncheck` now
+  reports none affecting the service.
+
 ## [1.9.1] — 2026-07-29
 
 Security maintenance. No functional change over 1.9.0 — same behaviour, patched
