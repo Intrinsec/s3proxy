@@ -16,23 +16,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Shared subtest names and expected error fragments.
+const (
+	caseValid       = "valid"
+	caseEmpty       = "empty"
+	errBucketFormat = "invalid bucket name format"
+)
+
 func TestValidateBucketName(t *testing.T) {
 	tests := map[string]struct {
 		bucket       string
 		wantErrMatch string
 	}{
-		"valid":               {bucket: "my-valid-bucket"},
+		caseValid:             {bucket: "my-valid-bucket"},
 		"valid dotted":        {bucket: "logs.prod.example"},
-		"empty":               {bucket: "", wantErrMatch: "empty"},
+		caseEmpty:             {bucket: "", wantErrMatch: caseEmpty},
 		"too short":           {bucket: "ab", wantErrMatch: "between 3 and 63"},
 		"too long":            {bucket: strings.Repeat("a", 64), wantErrMatch: "between 3 and 63"},
-		"leading dash":        {bucket: "-bad", wantErrMatch: "invalid bucket name format"},
-		"trailing dash":       {bucket: "bad-", wantErrMatch: "invalid bucket name format"},
-		"uppercase":           {bucket: "BadBucket", wantErrMatch: "invalid bucket name format"},
+		"leading dash":        {bucket: "-bad", wantErrMatch: errBucketFormat},
+		"trailing dash":       {bucket: "bad-", wantErrMatch: errBucketFormat},
+		"uppercase":           {bucket: "BadBucket", wantErrMatch: errBucketFormat},
 		"double dots":         {bucket: "bad..name", wantErrMatch: "invalid character sequences"},
 		"dash dot":            {bucket: "bad-.name", wantErrMatch: "invalid character sequences"},
 		"looks like ipv4":     {bucket: "192.168.0.1", wantErrMatch: "cannot be an IP address"},
-		"contains underscore": {bucket: "bad_name", wantErrMatch: "invalid bucket name format"},
+		"contains underscore": {bucket: "bad_name", wantErrMatch: errBucketFormat},
 	}
 
 	for name, tc := range tests {
@@ -53,8 +60,8 @@ func TestValidateObjectKey(t *testing.T) {
 		key          string
 		wantErrMatch string
 	}{
-		"valid":        {key: "path/to/object"},
-		"empty":        {key: "", wantErrMatch: "empty"},
+		caseValid:      {key: "path/to/object"},
+		caseEmpty:      {key: "", wantErrMatch: caseEmpty},
 		"max length":   {key: strings.Repeat("a", 1024)},
 		"over length":  {key: strings.Repeat("a", 1025), wantErrMatch: "maximum length"},
 		"unicode-safe": {key: "éléphant.pdf"},
@@ -112,7 +119,7 @@ func TestS3OperationTimeout(t *testing.T) {
 		value string
 		want  time.Duration
 	}{
-		"valid":        {value: "300", want: 5 * time.Minute},
+		caseValid:      {value: "300", want: 5 * time.Minute},
 		"at maximum":   {value: "1800", want: MaxS3OperationTimeout},
 		"zero":         {value: "0", want: DefaultS3OperationTimeout},
 		"negative":     {value: "-1", want: DefaultS3OperationTimeout},
