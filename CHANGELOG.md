@@ -14,6 +14,20 @@ Two version streams move independently:
 
 ## [Unreleased]
 
+## [1.9.3] — 2026-10-21
+
+Re-cut of 1.9.2 so its signed binaries get published: the release pipeline
+stopped on a tooling version check before building them. The application is
+unchanged from 1.9.2. Chart `1.10.3` accompanies this release.
+
+### Chart
+
+- **`chart/1.10.3`** — `appVersion` follows the app to `1.9.3`. The readiness
+  probe now waits up to 3s (was the 1s Kubernetes default). `/readyz` checks
+  the upstream S3 with a 2s budget, so a slightly slow upstream used to show
+  up as sporadic `Readiness probe failed` events even though the proxy was
+  fine.
+
 ## [1.9.2] — 2026-10-21
 
 Security maintenance. No functional change over 1.9.1 — same behaviour, patched
