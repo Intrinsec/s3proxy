@@ -128,6 +128,10 @@ readinessProbe:
     path: /readyz  # Readiness endpoint
     port: 4433
     scheme: HTTPS
+  # /readyz issues a ListBuckets against the upstream and waits up to 2s for
+  # it. Keep the probe timeout above that, or a slow upstream call is cut by
+  # the kubelet at the 1s default and logged as a failed probe.
+  timeoutSeconds: 3
 
 autoscaling:
   enabled: false
