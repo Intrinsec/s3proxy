@@ -280,7 +280,7 @@ Top-level value keys:
 | `service.type` / `service.port` | `ClusterIP` / `4433` | Standard k8s Service. |
 | `ingress.enabled` | `false` | Optional Ingress. |
 | `resources` | `cpu: 250m/500m`, `mem: 128Mi/256Mi` | k8s requests/limits. |
-| `livenessProbe` / `readinessProbe` | `/healthz` / `/readyz` on `4433` (HTTPS) | Standard probes. |
+| `livenessProbe` / `readinessProbe` | `/healthz` / `/readyz` on `4433` (HTTPS); readiness `timeoutSeconds: 3` | Standard probes. `/readyz` checks the upstream (ListBuckets, 2s budget), so keep its timeout above 2s. |
 | `autoscaling` | disabled | HPA on CPU/memory. |
 | `serviceMonitor` | disabled | Prometheus Operator scrape config. |
 | `prometheusRule` | disabled | Alert bundle. |
